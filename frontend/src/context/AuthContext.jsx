@@ -24,7 +24,7 @@ export const AuthProvider = ({ children }) => {
             userPlan = data.plan || userPlan;
             userRole = data.role || userRole;
           } else {
-            // Create user record in Firestore
+            // Create user record in Firestore for new user
             await setDoc(userRef, {
               uid: firebaseUser.uid,
               email: firebaseUser.email,
@@ -39,33 +39,21 @@ export const AuthProvider = ({ children }) => {
           console.warn('Firestore user fetch notice:', err.message);
         }
 
-        setUser({
+        const authenticatedProfile = {
           uid: firebaseUser.uid,
           email: firebaseUser.email,
-          displayName: firebaseUser.displayName,
+          displayName: firebaseUser.displayName || 'مستخدم أولتاني',
           photoURL: firebaseUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${firebaseUser.uid}`,
           plan: userPlan,
           role: userRole
-        });
+        };
+
+        setUser(authenticatedProfile);
+        localStorage.setItem('oltani_user', JSON.stringify(authenticatedProfile));
       } else {
-        // Fallback for offline or local preview
-        const saved = localStorage.getItem('oltani_user');
-        if (saved) {
-          try {
-            setUser(JSON.parse(saved));
-          } catch (_) {
-            setUser(null);
-          }
-        } else {
-          setUser({
-            uid: 'user_khalid_001',
-            email: 'khattab8687@gmail.com',
-            displayName: 'Khalid Khattab',
-            photoURL: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Khalid',
-            plan: 'pro',
-            role: 'admin'
-          });
-        }
+        // No authenticated user present -> Guest mode (null)
+        setUser(null);
+        localStorage.removeItem('oltani_user');
       }
       setLoading(false);
     });
@@ -79,17 +67,8 @@ export const AuthProvider = ({ children }) => {
       return result.user;
     } catch (error) {
       console.error('Google Sign-In Error:', error.message);
-      // Fallback
-      const mockUser = {
-        uid: 'user_' + Date.now(),
-        email: 'khattab8687@gmail.com',
-        displayName: 'Khalid Khattab',
-        photoURL: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Khalid',
-        plan: 'pro',
-        role: 'admin'
-      };
-      setUser(mockUser);
-      localStorage.setItem('oltani_user', JSON.stringify(mockUser));
+      // Fallback popup if browser blocks Firebase domain popup
+      alert('تعذر فتح نافذة Google Auth. يرجى التأكد من السماح بالـ Popups في متصفحك.');
     }
   };
 
@@ -101,7 +80,8 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('oltani_user');
   };
 
-  const isAdmin = user?.email === SUPER_ADMIN_EMAIL || user?.role === 'admin';
+  // Strictly check if user is authenticated AND has admin role/email
+  const isAdmin = user ? (user.email === SUPER_ADMIN_EMAIL || user.role === 'admin') : false;
 
   return (
     <AuthContext.Provider value={{ user, setUser, loginWithGoogle, logout, isAdmin, loading }}>
