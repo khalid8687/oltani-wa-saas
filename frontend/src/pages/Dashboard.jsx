@@ -3,14 +3,14 @@ import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { instanceApi } from '../services/api';
 import QRCodeModal from '../components/QRCodeModal';
-import { Bot, Play, Square, QrCode, Trash2, Edit3, Plus, MessageSquare, Smartphone } from 'lucide-react';
+import { Bot, Play, Square, QrCode, Trash2, Edit3, Plus, MessageSquare, Smartphone, Activity, Sparkles } from 'lucide-react';
 
 export default function Dashboard({ onNavigate, onEditInstance }) {
   const { user } = useAuth();
   const { t } = useLanguage();
   const [instances, setInstances] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeQrModal, setActiveQrModal] = useState(null); // instance ID
+  const [activeQrModal, setActiveQrModal] = useState(null);
 
   const userPlan = user?.plan || 'free';
   const planLimits = { free: 50, pro: 300, ultra: 1000 };
@@ -33,7 +33,9 @@ export default function Dashboard({ onNavigate, onEditInstance }) {
   };
 
   useEffect(() => {
-    loadInstances();
+    if (user) {
+      loadInstances();
+    }
   }, [user]);
 
   const handleStart = async (inst) => {
@@ -44,7 +46,7 @@ export default function Dashboard({ onNavigate, onEditInstance }) {
         loadInstances();
       }
     } catch (err) {
-      alert('Error starting instance: ' + err.message);
+      alert('خطأ أثناء تشغيل الجلسة: ' + err.message);
     }
   };
 
@@ -53,17 +55,17 @@ export default function Dashboard({ onNavigate, onEditInstance }) {
       await instanceApi.stopInstance(id);
       loadInstances();
     } catch (err) {
-      alert('Error stopping instance: ' + err.message);
+      alert('خطأ أثناء إيقاف الجلسة: ' + err.message);
     }
   };
 
   const handleDelete = async (id) => {
-    if (window.confirm('هل أنت تأكد من إزالة هذا الـ Instance؟')) {
+    if (window.confirm('هل أنت تأكد من إزالة هذا البوت؟')) {
       try {
         await instanceApi.deleteInstance(id);
         loadInstances();
       } catch (err) {
-        alert('Error deleting instance: ' + err.message);
+        alert('خطأ أثناء إزالة البوت: ' + err.message);
       }
     }
   };
@@ -71,75 +73,82 @@ export default function Dashboard({ onNavigate, onEditInstance }) {
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
       
-      {/* Header & Plan Stats */}
+      {/* Dashboard Top Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
-          <h1 style={{ fontSize: '1.8rem', fontWeight: 800 }}>لوحة التحكم بالبوتات</h1>
-          <p style={{ color: 'var(--text-secondary)' }}>إدارة أجهزة ووكلاء الواتساب ومتابعة الاستهلاك اليومي</p>
+          <h1 style={{ fontSize: '2rem', fontWeight: 900 }}>لوحة التحكم بالوكلاء (Dashboard)</h1>
+          <p style={{ color: 'var(--text-secondary)', marginTop: '0.2rem' }}>إدارة ومتابعة وكلاء الواتساب والاستهلاك اليومي المباشر</p>
         </div>
 
         <button 
           onClick={() => onNavigate('wizard')} 
           className="btn-primary"
+          style={{ padding: '0.85rem 1.5rem', borderRadius: '14px' }}
         >
           <Plus size={18} />
           <span>إنشاء بوت جديد</span>
         </button>
       </div>
 
-      {/* Usage Quota Card */}
-      <div className="glass-panel" style={{ padding: '1.5rem', marginBottom: '2rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <MessageSquare size={18} color="var(--accent-cyan)" />
-            <span style={{ fontWeight: 600 }}>استهلاك الرسائل اليومية</span>
+      {/* Real Daily Quota Progress Card */}
+      <div className="glass-panel" style={{ padding: '1.75rem', marginBottom: '2.5rem', borderLeft: '4px solid var(--brand-orange)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <Activity size={20} color="var(--brand-orange)" />
+            <span style={{ fontWeight: 800, fontSize: '1.05rem' }}>معدل الاستهلاك اليومي للرسائل</span>
             <span className={`badge badge-plan-${userPlan}`}>
-              {userPlan.toUpperCase()} PLAN
+              باقة {userPlan.toUpperCase()}
             </span>
           </div>
-          <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>
+
+          <span style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--brand-orange)' }}>
             {currentMsgCount} / {maxMessages} رسالة
           </span>
         </div>
 
-        {/* Progress Bar */}
-        <div style={{ width: '100%', height: '10px', background: 'rgba(255,255,255,0.08)', borderRadius: '5px', overflow: 'hidden' }}>
+        {/* Dynamic Glowing Progress Bar */}
+        <div style={{ width: '100%', height: '12px', background: 'rgba(255,255,255,0.06)', borderRadius: '6px', overflow: 'hidden' }}>
           <div style={{
             width: `${usagePercent}%`,
             height: '100%',
-            background: 'linear-gradient(90deg, var(--accent-cyan) 0%, var(--accent-blue) 100%)',
-            borderRadius: '5px',
-            transition: 'width 0.5s ease'
+            background: 'linear-gradient(90deg, var(--brand-orange) 0%, #f59e0b 100%)',
+            borderRadius: '6px',
+            transition: 'width 0.6s cubic-bezier(0.16, 1, 0.3, 1)',
+            boxShadow: '0 0 12px rgba(255, 85, 0, 0.6)'
           }} />
         </div>
       </div>
 
       {/* Instances Grid */}
       {loading ? (
-        <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-          جاري تحميل بيانات الـ Instances...
+        <div className="glass-panel" style={{ padding: '4rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+          جاري تحميل بيانات البوتات...
         </div>
       ) : instances.length === 0 ? (
-        <div className="glass-panel" style={{ padding: '4rem 2rem', textAlign: 'center' }}>
-          <Bot size={48} color="var(--text-muted)" style={{ marginBottom: '1rem' }} />
-          <h3 style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: '0.5rem' }}>لا يوجد بوتات نشطة حالياً</h3>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>قم بإنشاء وكيل الواتساب الأول الخاص بك لربطه مع هاتفك والرد على العملاء</p>
-          <button onClick={() => onNavigate('wizard')} className="btn-primary">
-            <Plus size={18} />
+        <div className="glass-panel" style={{ padding: '5rem 2rem', textAlign: 'center' }}>
+          <div style={{ padding: '1.25rem', background: 'rgba(255, 85, 0, 0.1)', borderRadius: '50%', display: 'inline-flex', color: 'var(--brand-orange)', marginBottom: '1.25rem' }}>
+            <Bot size={44} />
+          </div>
+          <h3 style={{ fontSize: '1.3rem', fontWeight: 800, marginBottom: '0.5rem' }}>لا يوجد بوتات نشطة حالياً</h3>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem', maxWidth: '500px', margin: '0 auto 2rem' }}>
+            قم بإنشاء وتكوين أول وكيل واتساب خاص بك لربطه مع هاتفك والرد الآلي الذكي على العملاء
+          </p>
+          <button onClick={() => onNavigate('wizard')} className="btn-primary" style={{ padding: '1rem 2rem' }}>
+            <Plus size={20} />
             <span>إنشاء أول بوت الآن</span>
           </button>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '1.5rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: '1.75rem' }}>
           {instances.map((inst) => (
-            <div key={inst.id} className="glass-panel glass-panel-hover" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+            <div key={inst.id} className="glass-panel glass-panel-hover" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.25rem' }}>
                   <div>
-                    <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>{inst.name || 'WhatsApp Agent'}</h3>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-                      <Smartphone size={14} />
-                      <span>{inst.phone || 'غير مرتبطة برقم'}</span>
+                    <h3 style={{ fontSize: '1.2rem', fontWeight: 800 }}>{inst.name || 'WhatsApp Agent'}</h3>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                      <Smartphone size={14} color="var(--brand-cyan)" />
+                      <span>{inst.phone || 'غير مرتبط برقم'}</span>
                     </div>
                   </div>
 
@@ -148,32 +157,34 @@ export default function Dashboard({ onNavigate, onEditInstance }) {
                   </span>
                 </div>
 
-                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '0.75rem', borderRadius: '10px', fontSize: '0.85rem', marginBottom: '1.25rem', border: 'var(--glass-border)' }}>
-                  <strong>نمط الرد: </strong>
-                  {inst.mode === 'fixed' ? 'الرد الثابت' : inst.mode === 'qa' ? 'الرد بالتعليم (FAQ)' : 'الرد الآلي الذكي (AI)'}
+                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '0.85rem 1rem', borderRadius: '12px', fontSize: '0.88rem', marginBottom: '1.5rem', border: 'var(--glass-border)' }}>
+                  <strong style={{ color: 'var(--text-secondary)' }}>نمط الرد: </strong>
+                  <span style={{ color: 'var(--brand-orange)', fontWeight: 700 }}>
+                    {inst.mode === 'fixed' ? 'الرد الثابت' : inst.mode === 'qa' ? 'الرد بالتعليم (FAQ)' : 'الرد الآلي الذكي (AI)'}
+                  </span>
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', paddingTop: '1rem', borderTop: '1px solid var(--border-color)' }}>
+              {/* Actions Row */}
+              <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)' }}>
                 {inst.status !== 'connected' ? (
-                  <button onClick={() => handleStart(inst)} className="btn-primary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', flex: 1 }}>
-                    <QrCode size={14} />
+                  <button onClick={() => handleStart(inst)} className="btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', flex: 1, borderRadius: '10px' }}>
+                    <QrCode size={16} />
                     <span>ربط الـ QR</span>
                   </button>
                 ) : (
-                  <button onClick={() => handleStop(inst.id)} className="btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', flex: 1, color: 'var(--accent-red)' }}>
-                    <Square size={14} />
+                  <button onClick={() => handleStop(inst.id)} className="btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', flex: 1, color: 'var(--brand-red)', borderRadius: '10px' }}>
+                    <Square size={16} />
                     <span>إيقاف</span>
                   </button>
                 )}
 
-                <button onClick={() => { onEditInstance(inst); onNavigate('wizard'); }} className="btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}>
-                  <Edit3 size={14} />
+                <button onClick={() => { onEditInstance(inst); onNavigate('wizard'); }} className="btn-secondary" style={{ padding: '0.5rem 0.85rem', borderRadius: '10px' }}>
+                  <Edit3 size={16} />
                 </button>
 
-                <button onClick={() => handleDelete(inst.id)} className="btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', color: 'var(--accent-red)' }}>
-                  <Trash2 size={14} />
+                <button onClick={() => handleDelete(inst.id)} className="btn-secondary" style={{ padding: '0.5rem 0.85rem', color: 'var(--brand-red)', borderRadius: '10px' }}>
+                  <Trash2 size={16} />
                 </button>
               </div>
             </div>
