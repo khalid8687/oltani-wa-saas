@@ -1,284 +1,253 @@
-import React, { useEffect, useState } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { adminApi } from '../services/api';
-import { Shield, Key, Users, Cpu, RefreshCw, Save, CheckCircle, AlertTriangle, UserCheck, Lock } from 'lucide-react';
+import React, { useEffect, useState, useCallback } from 'react';
+import { useLang } from '../contexts/LanguageContext.jsx';
+import { adminApi } from '../services/api.js';
+import { classnames } from '../lib/utils.js';
+import { Shield, Users, Cpu, Activity, RefreshCw, Save, AlertCircle, Lock } from 'lucide-react';
 
 export default function AdminPanel() {
-  const { user } = useAuth();
-  const adminEmail = user?.email || 'khattab8687@gmail.com';
-
+  const { t } = useLang();
+  const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
-  const [geminiStats, setGeminiStats] = useState(null);
+  const [gemini, setGemini] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  // Gemini Configuration Form State
-  const [apiKeysInput, setApiKeysInput] = useState('');
-  const [selectedModel, setSelectedModel] = useState('gemini-1.5-flash');
-  const [savingConfig, setSavingConfig] = useState(false);
+  const [keysInput, setKeysInput] = useState('');
+  const [model, setModel] = useState('gemini-1.5-flash');
+  const [savingGemini, setSavingGemini] = useState(false);
 
-  const loadAdminData = async () => {
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
     try {
-      setLoading(true);
-      const [usersRes, geminiRes] = await Promise.all([
-        adminApi.getUsers(adminEmail),
-        adminApi.getGeminiStats(adminEmail)
+      const [s, u, g] = await Promise.all([
+        adminApi.stats(),
+        adminApi.users(),
+        adminApi.geminiStats()
       ]);
-
-      if (usersRes.data.success) {
-        setUsers(usersRes.data.users);
-      }
-      if (geminiRes.data.success) {
-        setGeminiStats(geminiRes.data.stats);
-        if (geminiRes.data.stats.currentModel) {
-          setSelectedModel(geminiRes.data.stats.currentModel);
-        }
-      }
+      setStats(s.stats);
+      setUsers(s.users ?? u.users ?? []);
+      setGemini(g.stats);
+      if (g.stats?.activeModel) setModel(g.stats.activeModel);
     } catch (err) {
-      console.error('Failed to load admin data:', err);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const updatePlan = async (uid, plan) => {
+    try { await adminApi.updateUser({ uid, plan }); load(); }
+    catch (err) { setError(err.message); }
   };
 
-  useEffect(() => {
-    loadAdminData();
-  }, [user]);
-
-  const handleUpdateUserPlan = async (uid, newPlan) => {
-    try {
-      await adminApi.updateUser({ uid, plan: newPlan }, adminEmail);
-      loadAdminData();
-    } catch (err) {
-      alert('Error updating user plan: ' + err.message);
-    }
+  const updateRole = async (uid, role) => {
+    try { await adminApi.updateUser({ uid, role }); load(); }
+    catch (err) { setError(err.message); }
   };
 
-  const handleUpdateUserRole = async (uid, newRole) => {
-    try {
-      await adminApi.updateUser({ uid, role: newRole }, adminEmail);
-      loadAdminData();
-    } catch (err) {
-      alert('Error updating user role: ' + err.message);
-    }
+  const block = async (uid) => {
+    if (!window.confirm('Block this user?')) return;
+    try { await adminApi.blockUser(uid); load(); }
+    catch (err) { setError(err.message); }
   };
 
-  const handleSaveGeminiConfig = async (e) => {
+  const saveGemini = async (e) => {
     e.preventDefault();
-    setSavingConfig(true);
-
+    setSavingGemini(true);
     try {
-      const keysArray = apiKeysInput
-        .split('\n')
-        .map(k => k.trim())
-        .filter(k => k.length > 0);
-
-      const res = await adminApi.updateGeminiConfig({
-        keys: keysArray.length > 0 ? keysArray : undefined,
-        modelName: selectedModel
-      }, adminEmail);
-
-      if (res.data.success) {
-        alert('تم تحديث إعدادات مفاتيح Gemini والموديل بنجاح!');
-        loadAdminData();
-      }
-    } catch (err) {
-      alert('Error updating Gemini config: ' + err.message);
-    } finally {
-      setSavingConfig(false);
-    }
+      const keys = keysInput.split('\n').map(k => k.trim()).filter(Boolean);
+      const res = await adminApi.geminiConfig({ keys: keys.length ? keys : undefined, modelName: model });
+      setGemini(res.stats);
+      setKeysInput('');
+    } catch (err) { setError(err.message); }
+    finally { setSavingGemini(false); }
   };
+
+  if (loading) return <div className="surface p-12 text-center text-muted animate-pulse-soft">{t('loading')}</div>;
+
+  const stat = (label, value, Icon) => (
+    <div className="surface p-4">
+      <div className="flex items-center gap-2 text-muted text-xs mb-2">
+        <Icon size={14} /> <span>{label}</span>
+      </div>
+      <div className="text-2xl font-bold tracking-tight">{value}</div>
+    </div>
+  );
 
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-      
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '2rem' }}>
-        <div style={{ padding: '0.75rem', background: 'rgba(0, 242, 254, 0.1)', borderRadius: '12px', color: 'var(--accent-cyan)' }}>
-          <Shield size={28} />
+    <div className="space-y-6">
+      <header className="flex items-center gap-3">
+        <div className="inline-flex p-2.5 rounded-lg bg-accent/10 text-accent">
+          <Shield size={22} />
         </div>
         <div>
-          <h1 style={{ fontSize: '1.8rem', fontWeight: 800 }}>لوحة الإدارة العليا (Superadmin Panel)</h1>
-          <p style={{ color: 'var(--text-secondary)' }}>إدارة المستخدمين والاشتراكات ومتابعة موازِن أحمال الـ 10 Gemini API Keys</p>
+          <h1 className="text-2xl font-bold tracking-tight">{t('adminTitle')}</h1>
+          <p className="text-sm text-muted">{t('adminSubtitle')}</p>
         </div>
-      </div>
+      </header>
 
-      {loading ? (
-        <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-          جاري تحميل بيانات اللوحة...
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-          
-          {/* Section 1: Users & Subscriptions Manager */}
-          <div className="glass-panel" style={{ padding: '1.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem' }}>
-              <Users size={20} color="var(--accent-cyan)" />
-              <h2 style={{ fontSize: '1.3rem', fontWeight: 700 }}>إدارة المستخدمين والاشتراكات</h2>
-            </div>
-
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'start' }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                    <th style={{ padding: '0.75rem', textAlign: 'start' }}>المستخدم</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'start' }}>البريد الإلكتروني</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'start' }}>الخطة الحالية</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'start' }}>الصلاحية</th>
-                    <th style={{ padding: '0.75rem', textAlign: 'start' }}>تعديل الخطة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-                        لا يوجد مستخدمين مسجلين حالياً سوى حسابك.
-                      </td>
-                    </tr>
-                  ) : (
-                    users.map((u) => (
-                      <tr key={u.uid} style={{ borderBottom: '1px solid var(--border-color)', fontSize: '0.9rem' }}>
-                        <td style={{ padding: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                          <img src={u.photoURL || 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + u.uid} alt="" style={{ width: '28px', height: '28px', borderRadius: '50%' }} />
-                          <span style={{ fontWeight: 600 }}>{u.displayName || 'مستخدم أولتاني'}</span>
-                        </td>
-                        <td style={{ padding: '0.85rem', color: 'var(--text-secondary)' }}>{u.email}</td>
-                        <td style={{ padding: '0.85rem' }}>
-                          <span className={`badge badge-plan-${u.plan || 'free'}`}>
-                            {(u.plan || 'free').toUpperCase()}
-                          </span>
-                        </td>
-                        <td style={{ padding: '0.85rem' }}>
-                          <span style={{ color: u.role === 'admin' ? 'var(--accent-cyan)' : 'var(--text-muted)', fontWeight: 600 }}>
-                            {u.role === 'admin' ? 'آدمن Admin' : 'مستخدم User'}
-                          </span>
-                        </td>
-                        <td style={{ padding: '0.85rem' }}>
-                          <select
-                            value={u.plan || 'free'}
-                            onChange={(e) => handleUpdateUserPlan(u.uid, e.target.value)}
-                            style={{
-                              padding: '0.4rem 0.6rem',
-                              borderRadius: '8px',
-                              border: 'var(--glass-border)',
-                              background: 'rgba(0,0,0,0.3)',
-                              color: 'var(--text-primary)',
-                              fontSize: '0.85rem'
-                            }}
-                          >
-                            <option value="free">Free ($0)</option>
-                            <option value="pro">Pro ($10)</option>
-                            <option value="ultra">Ultra ($20)</option>
-                          </select>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Section 2: Gemini 10-Key Load Balancer Stats & Settings */}
-          <div className="glass-panel" style={{ padding: '1.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Cpu size={20} color="var(--accent-cyan)" />
-                <h2 style={{ fontSize: '1.3rem', fontWeight: 700 }}>مراقب أحمال Gemini (10 API Keys Pool)</h2>
-              </div>
-              <button onClick={loadAdminData} className="btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}>
-                <RefreshCw size={14} /> تحديث الإحصائيات
-              </button>
-            </div>
-
-            {/* Current Stats Overview */}
-            {geminiStats && (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
-                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '12px', border: 'var(--glass-border)' }}>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>المفاتيح المحمّلة في الموازن</span>
-                  <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--accent-cyan)', marginTop: '0.2rem' }}>
-                    {geminiStats.totalKeys} مفتاح
-                  </div>
-                </div>
-
-                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '12px', border: 'var(--glass-border)' }}>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>الموديل المعتمد حالياً</span>
-                  <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--accent-gold)', marginTop: '0.2rem' }}>
-                    {geminiStats.currentModel}
-                  </div>
-                </div>
-
-                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '12px', border: 'var(--glass-border)' }}>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>مؤشر التدوير النشط (Index)</span>
-                  <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#c084fc', marginTop: '0.2rem' }}>
-                    Key #{geminiStats.currentIndex + 1}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Keys Usage List */}
-            {geminiStats?.stats && geminiStats.stats.length > 0 && (
-              <div style={{ marginBottom: '2rem' }}>
-                <h4 style={{ fontWeight: 600, marginBottom: '0.75rem', fontSize: '0.95rem' }}>استهلاك المفاتيح الفردية:</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '0.75rem' }}>
-                  {geminiStats.stats.map((st, idx) => (
-                    <div key={idx} style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem 1rem', borderRadius: '10px', border: 'var(--glass-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Key #{idx + 1}: {st.keyMasked}</div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>أخطاء: {st.errors}</div>
-                      </div>
-                      <div style={{ fontWeight: 800, color: 'var(--accent-cyan)' }}>
-                        {st.count} req
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Edit Keys & Model Config Form */}
-            <form onSubmit={handleSaveGeminiConfig} style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1.5rem' }}>
-              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '1rem' }}>إعدادات وتأمين الـ API Keys والموديل</h3>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>
-                <div>
-                  <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.5rem' }}>اختيار موديل جوجل Gemini</label>
-                  <select
-                    value={selectedModel}
-                    onChange={(e) => setSelectedModel(e.target.value)}
-                    style={{ width: '100%', padding: '0.85rem', borderRadius: '12px', border: 'var(--glass-border)', background: 'rgba(0,0,0,0.3)', color: 'var(--text-primary)', fontSize: '0.95rem' }}
-                  >
-                    <option value="gemini-1.5-flash">gemini-1.5-flash (سريع وموصى به)</option>
-                    <option value="gemini-1.5-pro">gemini-1.5-pro (للمهام المعقدة)</option>
-                    <option value="gemini-2.0-flash">gemini-2.0-flash (الجيل الجديد)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.5rem' }}>مفاتيح Gemini API الجديدة (مفتاح في كل سطر)</label>
-                  <textarea
-                    rows={4}
-                    value={apiKeysInput}
-                    onChange={(e) => setApiKeysInput(e.target.value)}
-                    placeholder="ضع مفتاح في كل سطر لإضافتها لموازن الأحمال..."
-                    style={{ width: '100%', padding: '0.85rem', borderRadius: '12px', border: 'var(--glass-border)', background: 'rgba(0,0,0,0.3)', color: 'var(--text-primary)', fontSize: '0.85rem' }}
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <button type="submit" disabled={savingConfig} className="btn-primary">
-                  <Save size={18} />
-                  <span>{savingConfig ? 'جاري الحفظ...' : 'تطبيق تحديثات الـ API Keys والموديل'}</span>
-                </button>
-              </div>
-            </form>
-
-          </div>
-
+      {error && (
+        <div className="surface border-err/30 bg-err/5 p-3 flex items-start gap-2 text-sm text-err">
+          <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="ms-auto text-err/70 hover:text-err text-xs">×</button>
         </div>
       )}
 
+      {/* Overview */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {stat(t('totalUsers'), stats?.totalUsers ?? 0, Users)}
+        {stat(t('totalInstances'), stats?.totalInstances ?? 0, Activity)}
+        {stat('Free', stats?.planCounts?.free ?? 0, Users)}
+        {stat('Pro / Ultra', (stats?.planCounts?.pro ?? 0) + (stats?.planCounts?.ultra ?? 0), Users)}
+      </div>
+
+      {/* Users table */}
+      <div className="surface">
+        <div className="p-4 border-b flex items-center gap-2">
+          <Users size={16} className="text-muted" />
+          <h2 className="font-semibold text-sm">{t('users')}</h2>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-muted border-b">
+                <th className="text-start p-3 font-medium">{t('home')}</th>
+                <th className="text-start p-3 font-medium">Email</th>
+                <th className="text-start p-3 font-medium">{t('plan')}</th>
+                <th className="text-start p-3 font-medium">{t('role')}</th>
+                <th className="text-start p-3 font-medium">{t('actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map(u => (
+                <tr key={u.uid} className="border-b last:border-0">
+                  <td className="p-3">
+                    <div className="flex items-center gap-2">
+                      <img src={u.photoURL} alt="" className="w-7 h-7 rounded-full" referrerPolicy="no-referrer" />
+                      <span className="font-medium">{u.displayName || u.email}</span>
+                    </div>
+                  </td>
+                  <td className="p-3 text-muted">{u.email}</td>
+                  <td className="p-3">
+                    <select
+                      value={u.plan || 'free'}
+                      onChange={(e) => updatePlan(u.uid, e.target.value)}
+                      className={classnames(
+                        'text-xs px-2 py-1 rounded-md border bg-subtle',
+                        u.plan === 'pro' ? 'text-accent border-accent/30 bg-accent/5' :
+                        u.plan === 'ultra' ? 'text-purple-400 border-purple-500/30 bg-purple-500/5' :
+                        'text-muted'
+                      )}
+                    >
+                      <option value="free">Free</option>
+                      <option value="pro">Pro</option>
+                      <option value="ultra">Ultra</option>
+                    </select>
+                  </td>
+                  <td className="p-3">
+                    <select
+                      value={u.role || 'user'}
+                      onChange={(e) => updateRole(u.uid, e.target.value)}
+                      className="text-xs px-2 py-1 rounded-md border bg-subtle"
+                    >
+                      <option value="user">User</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </td>
+                  <td className="p-3">
+                    <button
+                      onClick={() => block(u.uid)}
+                      className="btn-ghost text-xs px-2 py-1 text-err hover:bg-err/10"
+                      title="Block"
+                    >
+                      <Lock size={12} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {users.length === 0 && (
+                <tr><td colSpan={5} className="p-6 text-center text-muted text-sm">No users yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Gemini balancer */}
+      <div className="surface">
+        <div className="p-4 border-b flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Cpu size={16} className="text-muted" />
+            <h2 className="font-semibold text-sm">{t('geminiPool')}</h2>
+          </div>
+          <button onClick={load} className="btn-ghost text-xs px-2 py-1">
+            <RefreshCw size={12} /> {t('refresh')}
+          </button>
+        </div>
+
+        <div className="p-4 grid grid-cols-2 md:grid-cols-3 gap-3 border-b">
+          <div>
+            <div className="text-xs text-muted mb-1">{t('geminiKeys')}</div>
+            <div className="text-xl font-bold text-accent">{gemini?.totalKeys ?? 0}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted mb-1">{t('geminiModel')}</div>
+            <div className="text-sm font-mono font-semibold">{gemini?.activeModel ?? '—'}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted mb-1">{t('cursor')}</div>
+            <div className="text-xl font-bold text-purple-400">#{(gemini?.cursor ?? 0) + 1}</div>
+          </div>
+        </div>
+
+        {gemini?.keys?.length > 0 && (
+          <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 border-b">
+            {gemini.keys.map(k => (
+              <div key={k.index} className="flex items-center justify-between px-3 py-2 rounded-md bg-subtle border text-xs">
+                <div>
+                  <div className="font-mono">{k.masked}</div>
+                  <div className="text-muted mt-0.5">errors: {k.errors}{k.cooling ? ' · cooling' : ''}</div>
+                </div>
+                <div className="font-bold text-accent">{k.count}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <form onSubmit={saveGemini} className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="label">{t('geminiModel')}</label>
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="bg-subtle border rounded-lg px-3 py-2 text-sm w-full outline-none focus:border-accent"
+            >
+              <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+              <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+              <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp</option>
+            </select>
+          </div>
+          <div>
+            <label className="label">Keys (one per line)</label>
+            <textarea
+              rows={3}
+              value={keysInput}
+              onChange={(e) => setKeysInput(e.target.value)}
+              className="bg-subtle border rounded-lg px-3 py-2 text-xs w-full outline-none focus:border-accent font-mono"
+              placeholder="AIzaSy...&#10;AIzaSy..."
+            />
+          </div>
+          <div className="md:col-span-2 flex justify-end">
+            <button type="submit" disabled={savingGemini} className="btn-primary">
+              <Save size={14} /> {t('saveGemini')}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

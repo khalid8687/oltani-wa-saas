@@ -1,0 +1,9 @@
+{
+  "name": "oltani",
+  "compatibility_date": "2024-09-01",
+  "pages_build_output_dir": "./frontend/dist",
+  "routes": [
+    { "pattern": "/api/*",    "resolve": "off" },
+    { "pattern": "/socket.io/*", "resolve": "off" }
+  ]
+}

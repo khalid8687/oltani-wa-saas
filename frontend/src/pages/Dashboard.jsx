@@ -1,209 +1,193 @@
-import React, { useEffect, useState } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { useLanguage } from '../context/LanguageContext';
-import { instanceApi } from '../services/api';
-import QRCodeModal from '../components/QRCodeModal';
-import { Bot, Play, Square, QrCode, Trash2, Edit3, Plus, MessageSquare, Smartphone, Activity, Sparkles } from 'lucide-react';
+import React, { useEffect, useState, useCallback } from 'react';
+import { useAuth } from '../contexts/AuthContext.jsx';
+import { useLang } from '../contexts/LanguageContext.jsx';
+import { instanceApi } from '../services/api.js';
+import QRCodeModal from '../components/QRCodeModal.jsx';
+import { effectivePlan, PLAN_META, statusMeta, modeMeta } from '../lib/utils.js';
+import {
+  Plus, QrCode, Square, Pencil, Trash2, Bot, Activity, Smartphone, AlertCircle
+} from 'lucide-react';
 
-export default function Dashboard({ onNavigate, onEditInstance }) {
-  const { user } = useAuth();
-  const { t } = useLanguage();
+export default function Dashboard({ onNavigate, onEdit }) {
+  const { user, setUser } = useAuth();
+  const { t } = useLang();
   const [instances, setInstances] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeQrModal, setActiveQrModal] = useState(null);
+  const [error, setError] = useState(null);
+  const [activeQr, setActiveQr] = useState(null);
 
-  const userPlan = user?.plan || 'free';
-  const planLimits = { free: 50, pro: 300, ultra: 1000 };
-  const maxMessages = planLimits[userPlan] || 50;
-  const currentMsgCount = user?.dailyMsgCount || 0;
-  const usagePercent = Math.min(100, Math.round((currentMsgCount / maxMessages) * 100));
+  const plan = effectivePlan(user);
+  const meta = PLAN_META[plan];
+  const used = user?.dailyMsgCount || 0;
+  const pct = Math.min(100, Math.round((used / meta.daily) * 100));
 
-  const loadInstances = async () => {
+  const load = useCallback(async () => {
     try {
-      setLoading(true);
-      const res = await instanceApi.getUserInstances(user?.uid || 'user_khalid_001');
-      if (res.data.success) {
-        setInstances(res.data.instances);
+      setError(null);
+      const res = await instanceApi.list();
+      if (res.success) {
+        setInstances(res.instances || []);
+        if (res.plan) {
+          // Keep the *stored* plan in user state; effectivePlan() recomputes trial.
+          setUser(u => ({ ...u, plan: res.plan.stored || u?.plan || 'free' }));
+        }
       }
     } catch (err) {
-      console.error('Failed to load instances:', err);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
-  };
+  }, [setUser]);
 
-  useEffect(() => {
-    if (user) {
-      loadInstances();
-    }
-  }, [user]);
+  useEffect(() => { load(); }, [load]);
 
-  const handleStart = async (inst) => {
+  const start = async (inst) => {
     try {
-      const res = await instanceApi.startInstance(inst.id, inst);
-      if (res.data.success) {
-        setActiveQrModal(inst.id);
-        loadInstances();
-      }
-    } catch (err) {
-      alert('خطأ أثناء تشغيل الجلسة: ' + err.message);
-    }
+      await instanceApi.start(inst.id);
+      setActiveQr(inst.id);
+      load();
+    } catch (err) { setError(err.message); }
   };
 
-  const handleStop = async (id) => {
-    try {
-      await instanceApi.stopInstance(id);
-      loadInstances();
-    } catch (err) {
-      alert('خطأ أثناء إيقاف الجلسة: ' + err.message);
-    }
+  const stop = async (id) => {
+    try { await instanceApi.stop(id); load(); }
+    catch (err) { setError(err.message); }
   };
 
-  const handleDelete = async (id) => {
-    if (window.confirm('هل أنت تأكد من إزالة هذا البوت؟')) {
-      try {
-        await instanceApi.deleteInstance(id);
-        loadInstances();
-      } catch (err) {
-        alert('خطأ أثناء إزالة البوت: ' + err.message);
-      }
-    }
+  const remove = async (id) => {
+    if (!window.confirm('Delete this agent?')) return;
+    try { await instanceApi.remove(id); load(); }
+    catch (err) { setError(err.message); }
   };
+
+  const planOk = instances.length < meta.instances;
 
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-      
-      {/* Dashboard Top Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 style={{ fontSize: '2rem', fontWeight: 900 }}>لوحة التحكم بالوكلاء (Dashboard)</h1>
-          <p style={{ color: 'var(--text-secondary)', marginTop: '0.2rem' }}>إدارة ومتابعة وكلاء الواتساب والاستهلاك اليومي المباشر</p>
+          <h1 className="text-2xl font-bold tracking-tight">{t('instancesTitle')}</h1>
+          <p className="text-sm text-muted">{t('instancesSubtitle')}</p>
         </div>
-
-        <button 
-          onClick={() => onNavigate('wizard')} 
+        <button
+          onClick={() => {
+            if (!planOk) { setError(t('errPlanLimit')); return; }
+            onEdit(null);
+            onNavigate('wizard');
+          }}
           className="btn-primary"
-          style={{ padding: '0.85rem 1.5rem', borderRadius: '14px' }}
         >
-          <Plus size={18} />
-          <span>إنشاء بوت جديد</span>
+          <Plus size={16} /> {t('newInstance')}
         </button>
       </div>
 
-      {/* Real Daily Quota Progress Card */}
-      <div className="glass-panel" style={{ padding: '1.75rem', marginBottom: '2.5rem', borderLeft: '4px solid var(--brand-orange)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-            <Activity size={20} color="var(--brand-orange)" />
-            <span style={{ fontWeight: 800, fontSize: '1.05rem' }}>معدل الاستهلاك اليومي للرسائل</span>
-            <span className={`badge badge-plan-${userPlan}`}>
-              باقة {userPlan.toUpperCase()}
-            </span>
-          </div>
+      {error && (
+        <div className="surface border-err/30 bg-err/5 p-3 flex items-start gap-2 text-sm">
+          <AlertCircle size={16} className="text-err mt-0.5 shrink-0" />
+          <span className="text-err">{error}</span>
+          <button onClick={() => setError(null)} className="ms-auto text-err/70 hover:text-err text-xs">×</button>
+        </div>
+      )}
 
-          <span style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--brand-orange)' }}>
-            {currentMsgCount} / {maxMessages} رسالة
+      {/* Usage panel */}
+      <div className="surface p-5">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <Activity size={16} className="text-accent" />
+            <span className="font-semibold text-sm">{t('quotaLabel')}</span>
+            <span className={`badge-plan-${plan}`}>{meta.label}</span>
+          </div>
+          <span className="text-sm font-semibold text-muted">
+            {used} / {meta.daily}
           </span>
         </div>
-
-        {/* Dynamic Glowing Progress Bar */}
-        <div style={{ width: '100%', height: '12px', background: 'rgba(255,255,255,0.06)', borderRadius: '6px', overflow: 'hidden' }}>
-          <div style={{
-            width: `${usagePercent}%`,
-            height: '100%',
-            background: 'linear-gradient(90deg, var(--brand-orange) 0%, #f59e0b 100%)',
-            borderRadius: '6px',
-            transition: 'width 0.6s cubic-bezier(0.16, 1, 0.3, 1)',
-            boxShadow: '0 0 12px rgba(255, 85, 0, 0.6)'
-          }} />
+        <div className="h-2 rounded-full bg-subtle overflow-hidden">
+          <div
+            className="h-full bg-accent rounded-full transition-all duration-500"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <div className="mt-2 text-xs text-muted">
+          {t('instancesUsed')}: {instances.length} / {meta.instances === Infinity ? '∞' : meta.instances}
         </div>
       </div>
 
-      {/* Instances Grid */}
+      {/* Grid */}
       {loading ? (
-        <div className="glass-panel" style={{ padding: '4rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-          جاري تحميل بيانات البوتات...
-        </div>
+        <div className="surface p-12 text-center text-muted animate-pulse-soft">{t('loading')}</div>
       ) : instances.length === 0 ? (
-        <div className="glass-panel" style={{ padding: '5rem 2rem', textAlign: 'center' }}>
-          <div style={{ padding: '1.25rem', background: 'rgba(255, 85, 0, 0.1)', borderRadius: '50%', display: 'inline-flex', color: 'var(--brand-orange)', marginBottom: '1.25rem' }}>
-            <Bot size={44} />
+        <div className="surface p-12 text-center">
+          <div className="inline-flex p-3 rounded-full bg-subtle text-accent mb-4">
+            <Bot size={32} />
           </div>
-          <h3 style={{ fontSize: '1.3rem', fontWeight: 800, marginBottom: '0.5rem' }}>لا يوجد بوتات نشطة حالياً</h3>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem', maxWidth: '500px', margin: '0 auto 2rem' }}>
-            قم بإنشاء وتكوين أول وكيل واتساب خاص بك لربطه مع هاتفك والرد الآلي الذكي على العملاء
-          </p>
-          <button onClick={() => onNavigate('wizard')} className="btn-primary" style={{ padding: '1rem 2rem' }}>
-            <Plus size={20} />
-            <span>إنشاء أول بوت الآن</span>
+          <h3 className="font-semibold text-lg mb-1">{t('noInstances')}</h3>
+          <p className="text-muted text-sm mb-5 max-w-md mx-auto">{t('noInstancesBody')}</p>
+          <button onClick={() => { onEdit(null); onNavigate('wizard'); }} className="btn-primary">
+            <Plus size={16} /> {t('newInstance')}
           </button>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', gap: '1.75rem' }}>
-          {instances.map((inst) => (
-            <div key={inst.id} className="glass-panel glass-panel-hover" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.25rem' }}>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {instances.map(inst => {
+            const st = statusMeta(inst.status);
+            const md = modeMeta(inst.mode);
+            return (
+              <div key={inst.id} className="surface surface-hover p-4 flex flex-col">
+                <div className="flex items-start justify-between mb-3">
                   <div>
-                    <h3 style={{ fontSize: '1.2rem', fontWeight: 800 }}>{inst.name || 'WhatsApp Agent'}</h3>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                      <Smartphone size={14} color="var(--brand-cyan)" />
-                      <span>{inst.phone || 'غير مرتبط برقم'}</span>
+                    <h3 className="font-semibold">{inst.name}</h3>
+                    <div className="flex items-center gap-1 text-xs text-muted mt-0.5">
+                      <Smartphone size={11} />
+                      <span dir="ltr">{inst.phone || '—'}</span>
                     </div>
                   </div>
-
-                  <span className={`badge ${inst.status === 'connected' ? 'badge-connected' : inst.status === 'qr_ready' ? 'badge-qr' : 'badge-disconnected'}`}>
-                    {inst.status === 'connected' ? 'متصل' : inst.status === 'qr_ready' ? 'بانتظار الـ QR' : 'غير متصل'}
-                  </span>
+                  <span className={st.cls}>{t(st.key)}</span>
                 </div>
 
-                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '0.85rem 1rem', borderRadius: '12px', fontSize: '0.88rem', marginBottom: '1.5rem', border: 'var(--glass-border)' }}>
-                  <strong style={{ color: 'var(--text-secondary)' }}>نمط الرد: </strong>
-                  <span style={{ color: 'var(--brand-orange)', fontWeight: 700 }}>
-                    {inst.mode === 'fixed' ? 'الرد الثابت' : inst.mode === 'qa' ? 'الرد بالتعليم (FAQ)' : 'الرد الآلي الذكي (AI)'}
-                  </span>
+                <div className="bg-subtle border rounded-md px-2.5 py-1.5 text-xs mb-4">
+                  <span className="text-muted">{t('status')}: </span>
+                  <span className="text-accent font-medium">{t(md.key)}</span>
+                </div>
+
+                <div className="mt-auto flex gap-1.5 pt-3 border-t">
+                  {inst.status !== 'connected' ? (
+                    <button onClick={() => start(inst)} className="btn-primary flex-1 text-xs px-3 py-1.5">
+                      <QrCode size={14} /> {t('connect')}
+                    </button>
+                  ) : (
+                    <button onClick={() => stop(inst.id)} className="btn-danger flex-1 text-xs px-3 py-1.5">
+                      <Square size={14} /> {t('stop')}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => { onEdit(inst); onNavigate('wizard'); }}
+                    className="btn-secondary px-2.5 py-1.5"
+                    aria-label={t('edit')}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    onClick={() => remove(inst.id)}
+                    className="btn-danger px-2.5 py-1.5"
+                    aria-label={t('delete')}
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               </div>
-
-              {/* Actions Row */}
-              <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', paddingTop: '1.25rem', borderTop: '1px solid var(--border-color)' }}>
-                {inst.status !== 'connected' ? (
-                  <button onClick={() => handleStart(inst)} className="btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', flex: 1, borderRadius: '10px' }}>
-                    <QrCode size={16} />
-                    <span>ربط الـ QR</span>
-                  </button>
-                ) : (
-                  <button onClick={() => handleStop(inst.id)} className="btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', flex: 1, color: 'var(--brand-red)', borderRadius: '10px' }}>
-                    <Square size={16} />
-                    <span>إيقاف</span>
-                  </button>
-                )}
-
-                <button onClick={() => { onEditInstance(inst); onNavigate('wizard'); }} className="btn-secondary" style={{ padding: '0.5rem 0.85rem', borderRadius: '10px' }}>
-                  <Edit3 size={16} />
-                </button>
-
-                <button onClick={() => handleDelete(inst.id)} className="btn-secondary" style={{ padding: '0.5rem 0.85rem', color: 'var(--brand-red)', borderRadius: '10px' }}>
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {/* QR Code Modal Popup */}
-      {activeQrModal && (
+      {activeQr && (
         <QRCodeModal
-          instanceId={activeQrModal}
-          onClose={() => setActiveQrModal(null)}
-          onConnected={() => {
-            loadInstances();
-            setActiveQrModal(null);
-          }}
+          instanceId={activeQr}
+          onClose={() => setActiveQr(null)}
+          onConnected={() => { load(); setActiveQr(null); }}
         />
       )}
-
     </div>
   );
 }

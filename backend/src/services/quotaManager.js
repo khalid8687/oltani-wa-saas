@@ -1,75 +1,102 @@
-import { db } from '../config/firebase.js';
+import { PLAN_LIMITS, TRIAL_DAYS } from '../config/env.js';
+import { getDb } from '../config/firebase.js';
+import { logger } from '../utils/logger.js';
 
-export const PLAN_LIMITS = {
-  free: 50,
-  pro: 300,
-  ultra: 1000
+// Firestore server-side increment helper.
+let _FieldValue = null;
+async function getFieldValue() {
+  if (!_FieldValue) {
+    const { firestore } = await import('firebase-admin');
+    _FieldValue = firestore.FieldValue;
+  }
+  return _FieldValue;
+}
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysSince(iso) {
+  if (!iso) return Infinity;
+  const ms = Date.now() - new Date(iso).getTime();
+  return ms / (1000 * 60 * 60 * 24);
+}
+
+/**
+ * Resolve the user's *effective* plan, accounting for free trial.
+ * If trial active → 'pro'. Otherwise → stored plan.
+ */
+export function resolveEffectivePlan(user) {
+  const base = user?.plan || 'free';
+  if (base === 'pro' || base === 'ultra') return base;
+
+  const trialStartedAt = user?.trialStartedAt;
+  if (trialStartedAt && daysSince(trialStartedAt) <= TRIAL_DAYS) {
+    return 'pro';
+  }
+  return 'free';
+}
+
+export function planLimits(plan) {
+  return PLAN_LIMITS[plan] || PLAN_LIMITS.free;
+}
+
+export const QuotaManager = {
+  async ensureDailyReset(userRef, data) {
+    const today = todayStr();
+    if (data.lastResetDate !== today) {
+      const reset = { dailyMsgCount: 0, lastResetDate: today };
+      await userRef.set(reset, { merge: true });
+      Object.assign(data, reset);
+    }
+  },
+
+  async canSendMessage(uid, effectivePlan) {
+    const db = getDb();
+    if (!db || !uid) return { allowed: false, used: 0, limit: 0, reason: 'no_uid' };
+
+    const ref = db.collection('users').doc(uid);
+    const snap = await ref.get();
+    if (!snap.exists) return { allowed: false, used: 0, limit: 0, reason: 'no_user_doc' };
+
+    const data = snap.data();
+    if (data.isBlocked) return { allowed: false, used: 0, limit: 0, reason: 'blocked' };
+    await this.ensureDailyReset(ref, data);
+    const limit = planLimits(effectivePlan).dailyMessages;
+    const used = data.dailyMsgCount || 0;
+    return { allowed: used < limit, used, limit };
+  },
+
+  async incrementMessages(uid) {
+    const db = getDb();
+    if (!db) return;
+    const ref = db.collection('users').doc(uid);
+    try {
+      const FV = await getFieldValue();
+      await ref.set({
+        dailyMsgCount: FV.increment(1),
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (e) {
+      logger.warn({ msg: e.message }, 'incrementMessages failed.');
+    }
+  },
+
+  async countInstances(uid) {
+    const db = getDb();
+    if (!db) return 0;
+    const snap = await db.collection('instances')
+      .where('userId', '==', uid)
+      .where('isAdminGarden', '==', false)
+      .get();
+    return snap.size;
+  },
+
+  async canCreateInstance(uid, effectivePlan) {
+    const count = await this.countInstances(uid);
+    const limit = planLimits(effectivePlan).instances;
+    return { allowed: count < limit, used: count, limit };
+  }
 };
 
-export class QuotaManager {
-  static getLimitForPlan(plan = 'free') {
-    return PLAN_LIMITS[plan.toLowerCase()] || PLAN_LIMITS.free;
-  }
-
-  static getTodayString() {
-    return new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
-  }
-
-  static async canSendMessage(userId, plan = 'free') {
-    if (!userId || !db) return true; // Fallback if no user tracking or local testing
-
-    const today = this.getTodayString();
-    const limit = this.getLimitForPlan(plan);
-
-    try {
-      const userRef = db.collection('users').doc(userId);
-      const doc = await userRef.get();
-
-      if (!doc.exists) {
-        return true; // Default allow for new user initialized
-      }
-
-      const data = doc.data();
-      const lastResetDate = data.lastResetDate || '';
-      let dailyMsgCount = data.dailyMsgCount || 0;
-
-      // Reset count if it's a new day
-      if (lastResetDate !== today) {
-        dailyMsgCount = 0;
-        await userRef.set({ dailyMsgCount: 0, lastResetDate: today }, { merge: true });
-      }
-
-      return dailyMsgCount < limit;
-    } catch (error) {
-      console.error('Error checking quota:', error.message);
-      return true; // Allow gracefully on DB error
-    }
-  }
-
-  static async incrementMessageCount(userId) {
-    if (!userId || !db) return;
-
-    const today = this.getTodayString();
-
-    try {
-      const userRef = db.collection('users').doc(userId);
-      const doc = await userRef.get();
-
-      if (doc.exists) {
-        const data = doc.data();
-        const lastResetDate = data.lastResetDate || '';
-        let dailyMsgCount = data.dailyMsgCount || 0;
-
-        if (lastResetDate !== today) {
-          dailyMsgCount = 1;
-        } else {
-          dailyMsgCount += 1;
-        }
-
-        await userRef.set({ dailyMsgCount, lastResetDate: today }, { merge: true });
-      }
-    } catch (error) {
-      console.error('Error incrementing message count:', error.message);
-    }
-  }
-}
+export default QuotaManager;

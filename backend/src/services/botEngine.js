@@ -1,113 +1,90 @@
-import { geminiBalancer } from '../config/gemini.js';
+import { gemini } from '../config/gemini.js';
+import { logger } from '../utils/logger.js';
 
-export class BotEngine {
-  /**
-   * Process incoming text message based on instance configuration
-   * @param {Object} instance - Instance details (mode, fixedMessage, qaPairs, persona, instructions, services, routePhone)
-   * @param {string} incomingMessage - Text message received from WhatsApp user
-   * @returns {Promise<string|null>} Response text to send back (or null if no reply)
-   */
-  static async processMessage(instance, incomingMessage) {
-    if (!incomingMessage || typeof incomingMessage !== 'string') {
-      return null;
+const DEFAULT_FALLBACK = 'أهلاً بك! تم استلام رسالتك وسنعاود التواصل في أقرب وقت.';
+
+/**
+ * BotEngine — converts incoming WhatsApp messages into bot replies.
+ * 3 modes: `fixed` | `qa` | `ai`.
+ */
+export const BotEngine = {
+  async process(instance, incoming) {
+    if (typeof incoming !== 'string' || !incoming.trim()) return null;
+    const mode = (instance.mode || 'fixed').toLowerCase();
+
+    if (mode === 'fixed') return this.fixed(instance);
+    if (mode === 'qa')    return await this.qa(instance, incoming);
+    if (mode === 'ai' || mode === 'smart') return await this.ai(instance, incoming);
+    return this.fixed(instance);
+  },
+
+  fixed(instance) {
+    return instance.fixedMessage?.trim() || DEFAULT_FALLBACK;
+  },
+
+  async qa(instance, incoming) {
+    const pairs = Array.isArray(instance.qaPairs) ? instance.qaPairs.filter(p => p.question && p.answer) : [];
+    if (pairs.length === 0) {
+      return instance.fixedMessage?.trim() || DEFAULT_FALLBACK;
     }
 
-    const mode = instance.mode || 'fixed';
-
-    switch (mode) {
-      case 'fixed':
-        return this.handleFixedResponse(instance);
-
-      case 'qa':
-        return await this.handleQAResponse(instance, incomingMessage);
-
-      case 'ai':
-      case 'smart':
-        return await this.handleSmartAIResponse(instance, incomingMessage);
-
-      default:
-        return this.handleFixedResponse(instance);
-    }
-  }
-
-  // 1. Fixed Message Mode
-  static handleFixedResponse(instance) {
-    return instance.fixedMessage || 'أهلاً بك! تم استلام رسالتك وسنرد عليك في أقرب وقت.';
-  }
-
-  // 2. Predefined QA Matching Mode
-  static async handleQAResponse(instance, incomingMessage) {
-    const qaPairs = instance.qaPairs || [];
-
-    if (qaPairs.length === 0) {
-      return instance.fixedMessage || 'أهلاً بك! يسعدنا تواصلك معنا.';
-    }
-
-    // Build prompt for Gemini to select the best matching question index
-    const qaListFormatted = qaPairs
-      .map((item, idx) => `[ID ${idx}] السؤال: "${item.question}" -> الإجابة: "${item.answer}"`)
+    const list = pairs
+      .map((p, i) => `[${i}] سؤال: "${p.question}" ← إجابة: "${p.answer}"`)
       .join('\n');
 
-    const systemInstruction = `
-أنت مساعد ذكي مهمتك مراجعة أسئلة العميل ومطابقتها بأقرب سؤال من قائمة الأسئلة والأجوبة المسجلة لدينا.
-قائمة الأسئلة والأجوبة:
-${qaListFormatted}
+    const system = `أنت مطابق أسئلة ذكي.
+قائمة الأسئلة والإجابات لدينا:
+${list}
 
-تعليمات مهمة:
-1. قم بتحليل سؤال العميل المعطى.
-2. اختر الإجابة المطابقة من القائمة أعلاه إذا كان هناك تشابه في المعنى.
-3. قم بإرجاع نص الإجابة فقط بدون أي مقدمات أو شرح إضافي.
-4. إذا لم تجد أي سؤال مشابه إطلاقاً في القائمة، اعد فقط العبارة: "NO_MATCH".
-`;
+المهمة:
+1. حلل سؤال العميل.
+2. اختر أقرب إجابة من القائمة عند التشابه في المعنى.
+3. أعد نص الإجابة فقط بدون أي شرح أو مقدمات.
+4. إن لم يوجد أي تشابه، أعد فقط: NO_MATCH`;
 
     try {
-      const response = await geminiBalancer.generateResponse(systemInstruction, incomingMessage);
-
-      if (response && response.trim() !== 'NO_MATCH') {
-        return response.trim();
-      } else {
-        // Fallback to fixed message if no QA match
-        return instance.fixedMessage || 'شكراً لتواصلك معنا. سنرد على استفسارك في أقرب وقت.';
-      }
-    } catch (error) {
-      console.error('Error in QA Matching:', error.message);
-      return instance.fixedMessage || 'شكراً لتواصلك معنا.';
+      const reply = await gemini.generate(system, incoming, { temperature: 0.2, maxTokens: 512 });
+      const clean = (reply || '').trim();
+      return clean === 'NO_MATCH' ? (instance.fixedMessage?.trim() || DEFAULT_FALLBACK) : clean;
+    } catch (err) {
+      logger.error({ msg: err.message }, 'QA mode failed.');
+      return instance.fixedMessage?.trim() || DEFAULT_FALLBACK;
     }
-  }
+  },
 
-  // 3. Smart AI Agent Mode
-  static async handleSmartAIResponse(instance, incomingMessage) {
-    const persona = instance.persona || 'أنت ممثل خدمة عملاء محترف ومؤدب ومتعاون وتتحدث بلغة عربية سلسة.';
-    const instructions = instance.instructions || 'شركة تقدم أفضل الخدمات والحلول البرمجية والتسويقية.';
-    const services = instance.services || 'الخدمات المتوفرة: استشارات برمجية، حلول واتساب، تصميم موقع.';
-    const routePhone = instance.routePhone || '';
+  async ai(instance, incoming) {
+    const persona = instance.persona?.trim()
+      || 'ممثل خدمة عملاء محترف، مؤدب ومتعاون، يتحدث العربية بسلاسة.';
+    const instructions = instance.instructions?.trim()
+      || 'شركة تقدم أفضل الحلول والخدمات الرقمية.';
+    const services = instance.services?.trim()
+      || 'استشارات وحلول متكاملة.';
+    const route = (instance.routePhone || '').trim();
 
-    const systemInstruction = `
-أنت بوت خدمة عملاء ذكي مخصص للرد على عملاء الشركة عبر الواتساب.
+    const system = `أنت بوت خدمة عملاء ذكي للرد عبر واتساب.
 
-1. شخصيتك وطريقتك (Persona):
+[1] الشخصية:
 ${persona}
 
-2. معلومات وتعليمات الشركة (Instructions):
+[2] تعليمات الشركة:
 ${instructions}
 
-3. السلع والخدمات والأسعار والعروض (Services):
+[3] الخدمات والأسعار:
 ${services}
+${route ? `\n[4] عند طلب الشراء أو التحدث لموظف بشري، وجّه العميل للرقم: ${route}` : ''}
 
-${routePhone ? `4. في حالة طلب العميل الشراء مباشرة أو طلب التحدث مع موظف مبيعات/دعم بشري:
-قم بتزويده بالرقم التالي للتواصل المباشر: ${routePhone}` : ''}
-
-تعليمات التنسيق:
-- أجب بطريقة مختصرة، عصرية، ومفيدة ومناسبة لرسائل الواتساب.
-- لا تبتدع معلومات غير موجودة في التعليمات والخدمات المذكورة أعلاه.
-`;
+قواعد:
+- ردود قصيرة، مفيدة، تناسب الواتساب.
+- لا تختلق معلومات خارج ما سبق.
+- ردّ بلهجة العميل (عربي/إنجليزي).`;
 
     try {
-      const reply = await geminiBalancer.generateResponse(systemInstruction, incomingMessage);
-      return reply;
-    } catch (error) {
-      console.error('Error in Smart AI Response:', error.message);
-      return 'عذراً، حدث خطأ مؤقت في الخدمة. يرجى المحاولة لاحقاً.';
+      return await gemini.generate(system, incoming, { temperature: 0.7, maxTokens: 1024 });
+    } catch (err) {
+      logger.error({ msg: err.message }, 'AI mode failed.');
+      return 'عذراً، تعذّر توليد الرد الآن. حاول مرة أخرى بعد قليل.';
     }
   }
-}
+};
+
+export default BotEngine;

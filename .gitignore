@@ -1,4 +1,4 @@
-# Node modules
+# Dependencies
 node_modules/
 **/node_modules/
 
@@ -10,24 +10,31 @@ build/
 .wrangler/
 **/.wrangler/
 
-# Baileys Sessions
+# Baileys sessions
 sessions/
 **/sessions/
 
-# Environment and secret files
+# Secrets / env
 .env
 .env.local
-**/env
+.env.*.local
+**/.env
 api-details.txt
 *.key
 *.pub
+*.pem
 *.tar.gz
+
+# Local-only notes
 wzup-plan.txt
 
 # Logs
 *.log
 npm-debug.log*
+yarn-error.log*
 
-# System files
+# Editor / OS
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/

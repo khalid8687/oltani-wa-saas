@@ -1,0 +1,21 @@
+{
+  "short_name": "OLTANI",
+  "name": "OLTANI — AI WhatsApp Agents",
+  "description": "Multi-instance AI WhatsApp automation platform",
+  "categories": ["business", "productivity"],
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#08090a",
+  "theme_color": "#08090a",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Dashboard", "url": "/?page=dashboard" },
+    { "name": "New Agent", "url": "/?page=wizard" }
+  ]
+}

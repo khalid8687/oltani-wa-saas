@@ -1,20 +1,31 @@
-import { initializeApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc } from "firebase/firestore";
+import { initializeApp } from 'firebase/app';
+import {
+  getAuth, GoogleAuthProvider,
+  signInWithPopup, signInWithRedirect, getRedirectResult,
+  signOut, onAuthStateChanged,
+  getIdToken
+} from 'firebase/auth';
+import {
+  getFirestore, doc, getDoc, setDoc
+} from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyAuNGDdUTf-RokZYXPBgIWHHlJ0a-ez_Lw",
-  authDomain: "wazup-5f7a6.firebaseapp.com",
-  projectId: "wazup-5f7a6",
-  storageBucket: "wazup-5f7a6.firebasestorage.app",
-  messagingSenderId: "331207275494",
-  appId: "1:331207275494:web:58188137b07797ddaf1c27",
-  measurementId: "G-CJ3HVD4FC2"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyAuNGDdUTf-RokZYXPBgIWHHlJ0a-ez_Lw',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'wazup-5f7a6.firebaseapp.com',
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'wazup-5f7a6',
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || 'wazup-5f7a6.firebasestorage.app',
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MSG_SENDER_ID || '331207275494',
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || '1:331207275494:web:58188137b07797ddaf1c27'
 };
 
-const app = initializeApp(firebaseConfig);
+export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const googleProvider = new GoogleAuthProvider();
 export const db = getFirestore(app);
+export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-export { signInWithPopup, signOut, onAuthStateChanged, doc, setDoc, getDoc };
+export {
+  signInWithPopup, signInWithRedirect, getRedirectResult,
+  signOut, onAuthStateChanged,
+  doc, getDoc, setDoc, getIdToken
+};

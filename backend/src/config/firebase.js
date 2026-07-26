@@ -1,41 +1,74 @@
 import admin from 'firebase-admin';
-import dotenv from 'dotenv';
 import fs from 'fs';
-import path from 'path';
+import { env } from './env.js';
 
-dotenv.config();
+let app = null;
+let dbRef = null;
+let authRef = null;
+let initialized = false;
+let initError = null;
 
-let db;
-let auth;
-
-try {
-  let serviceAccount = null;
-
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    if (process.env.FIREBASE_SERVICE_ACCOUNT.startsWith('{')) {
-      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    } else if (fs.existsSync(process.env.FIREBASE_SERVICE_ACCOUNT)) {
-      serviceAccount = JSON.parse(fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT, 'utf8'));
+function resolveServiceAccount() {
+  const raw = env.firebaseServiceAccount;
+  if (!raw) return null;
+  if (raw.trim().startsWith('{')) {
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      console.error('❌ FIREBASE_SERVICE_ACCOUNT is not valid JSON:', e.message);
+      return null;
     }
   }
-
-  if (serviceAccount) {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-    console.log('Firebase Admin initialized with Service Account.');
-  } else {
-    // Initialize default application credentials or fallback
-    admin.initializeApp();
-    console.log('Firebase Admin initialized with default credentials.');
+  if (fs.existsSync(raw)) {
+    try {
+      return JSON.parse(fs.readFileSync(raw, 'utf8'));
+    } catch (e) {
+      console.error(`❌ Cannot read service account file ${raw}:`, e.message);
+      return null;
+    }
   }
-
-  db = admin.firestore();
-  auth = admin.auth();
-} catch (error) {
-  console.warn('Firebase initialization notice:', error.message);
-  // Fallback in-memory / local mock adapter if Firebase Admin is not yet configured with credentials
-  console.log('Using Firestore fallback mode for local testing.');
+  return null;
 }
 
-export { admin, db, auth };
+export function initFirebase() {
+  if (initialized) return app;
+  initialized = true;
+
+  try {
+    const serviceAccount = resolveServiceAccount();
+    if (serviceAccount) {
+      app = admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        projectId: serviceAccount.project_id
+      });
+      console.log('✅ Firebase Admin initialized from service account.');
+    } else if (admin.apps.length) {
+      app = admin.app();
+    } else {
+      app = admin.initializeApp({ projectId: 'wazup-5f7a6' });
+      console.warn('⚠️  Firebase Admin initialized WITHOUT credentials — Firestore writes will fail.');
+    }
+    dbRef = admin.firestore();
+    authRef = admin.auth();
+  } catch (err) {
+    initError = err;
+    console.error('❌ Firebase init failed:', err.message);
+  }
+  return app;
+}
+
+export function getDb() {
+  if (!initialized) initFirebase();
+  return dbRef;
+}
+
+export function getAuth() {
+  if (!initialized) initFirebase();
+  return authRef;
+}
+
+export function getFirebaseInitError() {
+  return initError;
+}
+
+initFirebase();

@@ -1,187 +1,145 @@
-import React, { useEffect, useState } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { adminApi, instanceApi } from '../services/api';
-import QRCodeModal from '../components/QRCodeModal';
-import { Flower2, Plus, QrCode, Square, Trash2, Edit3, Bot, Smartphone, HelpCircle } from 'lucide-react';
+import React, { useEffect, useState, useCallback } from 'react';
+import { useLang } from '../contexts/LanguageContext.jsx';
+import { adminApi, instanceApi } from '../services/api.js';
+import QRCodeModal from '../components/QRCodeModal.jsx';
+import { statusMeta } from '../lib/utils.js';
+import { Flower2, Plus, QrCode, Square, Pencil, Trash2, Smartphone, Bot } from 'lucide-react';
 
-export default function AdminGarden({ onEditInstance, onNavigate }) {
-  const { user } = useAuth();
-  const adminEmail = user?.email || 'khattab8687@gmail.com';
-
+export default function AdminGarden({ onNavigate, onEdit }) {
+  const { t } = useLang();
   const [instances, setInstances] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeQrModal, setActiveQrModal] = useState(null);
+  const [error, setError] = useState(null);
+  const [activeQr, setActiveQr] = useState(null);
 
-  const loadAdminGarden = async () => {
+  const load = useCallback(async () => {
+    setLoading(true);
     try {
-      setLoading(true);
-      const res = await adminApi.getAdminGarden(adminEmail);
-      if (res.data.success) {
-        setInstances(res.data.instances);
-      }
+      const res = await adminApi.garden();
+      setInstances(res.instances || []);
     } catch (err) {
-      console.error('Failed to load Admin Garden instances:', err);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => {
-    loadAdminGarden();
-  }, [user]);
+  useEffect(() => { load(); }, [load]);
 
-  const handleCreateGardenBot = () => {
-    onEditInstance({
-      name: 'بوت دعم وتحجز موقع OLTANI',
+  const createGardenBot = () => {
+    onEdit({
+      name: 'OLTANI Support & Booking',
       mode: 'ai',
       isAdminGarden: true,
-      persona: 'أنت ممثل الدعم الفني والحجوزات المباشر لموقع وحلول شركة OLTANI.',
-      instructions: 'موقعنا الإلكتروني https://oltani.com. نقدم خدمات الدعم الفني والاستشارات والحجز المباشر.',
-      services: 'حجز مواعيد الاستشارات البرمجية، دعم الباقات، والاستفسارات العامة.',
+      persona: 'You are OLTANI support, booking agent. Reply in user language.',
+      instructions: 'Website: https://oltani.com. We offer WhatsApp automation, AI bots, and SaaS.',
+      services: 'Plans: Free / Pro $10 / Ultra $20.',
       routePhone: '201002194451'
     });
     onNavigate('wizard');
   };
 
-  const handleStart = async (inst) => {
-    try {
-      const res = await instanceApi.startInstance(inst.id, inst);
-      if (res.data.success) {
-        setActiveQrModal(inst.id);
-        loadAdminGarden();
-      }
-    } catch (err) {
-      alert('Error starting instance: ' + err.message);
-    }
+  const start = async (inst) => {
+    try { await instanceApi.start(inst.id); setActiveQr(inst.id); load(); }
+    catch (err) { setError(err.message); }
   };
 
-  const handleStop = async (id) => {
-    try {
-      await instanceApi.stopInstance(id);
-      loadAdminGarden();
-    } catch (err) {
-      alert('Error stopping instance: ' + err.message);
-    }
+  const stop = async (id) => {
+    try { await instanceApi.stop(id); load(); }
+    catch (err) { setError(err.message); }
   };
 
-  const handleDelete = async (id) => {
-    if (window.confirm('هل أنت تأكد من حذف بوت حديقة الآدمن؟')) {
-      try {
-        await instanceApi.deleteInstance(id);
-        loadAdminGarden();
-      } catch (err) {
-        alert('Error deleting instance: ' + err.message);
-      }
-    }
+  const remove = async (id) => {
+    if (!window.confirm('Delete?')) return;
+    try { await instanceApi.remove(id); load(); }
+    catch (err) { setError(err.message); }
   };
 
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-      
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <div style={{ padding: '0.75rem', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '12px', color: 'var(--accent-green)' }}>
-            <Flower2 size={28} />
+    <div className="space-y-6">
+      <header className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          <div className="inline-flex p-2.5 rounded-lg bg-purple-500/10 text-purple-400">
+            <Flower2 size={22} />
           </div>
           <div>
-            <h1 style={{ fontSize: '1.8rem', fontWeight: 800 }}>حديقة الآدمن (Admin Garden)</h1>
-            <p style={{ color: 'var(--text-secondary)' }}>إدارة بوتات الواتساب الخاصة بالموقع المباشر والدعم الفني والحجوزات (بعيداً عن الـ SaaS)</p>
+            <h1 className="text-2xl font-bold tracking-tight">{t('gardenTitle')}</h1>
+            <p className="text-sm text-muted">{t('gardenSubtitle')}</p>
           </div>
         </div>
-
-        <button onClick={handleCreateGardenBot} className="btn-primary">
-          <Plus size={18} />
-          <span>إضافة بوت حديقة جديد</span>
+        <button onClick={createGardenBot} className="btn-primary">
+          <Plus size={16} /> {t('newGardenBot')}
         </button>
-      </div>
+      </header>
 
-      {/* Info Card */}
-      <div className="glass-panel" style={{ padding: '1.25rem 1.5rem', marginBottom: '2rem', display: 'flex', alignItems: 'center', gap: '1rem', borderLeft: '4px solid var(--accent-green)' }}>
-        <HelpCircle size={24} color="var(--accent-green)" />
-        <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-          هذه الصفحة مخصصة لإنشاء بوتات واتساب داخلية لـ <strong>OLTANI</strong> للرد على استفسارات الزوار وحجز الخدمات مباشرة من الموقع العام، ولا تؤثر على حصص الـ SaaS للمستخدمين.
-        </div>
-      </div>
+      {error && (
+        <div className="surface border-err/30 bg-err/5 p-3 text-sm text-err">{error}</div>
+      )}
 
-      {/* Instances Grid */}
       {loading ? (
-        <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-          جاري تحميل بوتات حديقة الآدمن...
-        </div>
+        <div className="surface p-12 text-center text-muted animate-pulse-soft">{t('loading')}</div>
       ) : instances.length === 0 ? (
-        <div className="glass-panel" style={{ padding: '4rem 2rem', textAlign: 'center' }}>
-          <Bot size={48} color="var(--accent-green)" style={{ marginBottom: '1rem' }} />
-          <h3 style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: '0.5rem' }}>لا يوجد بوتات حديقة مضافة حالياً</h3>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>أضف بوت الدعم الفني والحجوزات الخاص بشركتك للارتباط برقم الدعم المباشر</p>
-          <button onClick={handleCreateGardenBot} className="btn-primary">
-            <Plus size={18} />
-            <span>إضافة بوت الدعم والحجز</span>
+        <div className="surface p-12 text-center">
+          <Bot size={36} className="text-purple-400 mx-auto mb-3" />
+          <h3 className="font-semibold mb-1">{t('noInstances')}</h3>
+          <p className="text-muted text-sm mb-4">{t('gardenSubtitle')}</p>
+          <button onClick={createGardenBot} className="btn-primary">
+            <Plus size={16} /> {t('newGardenBot')}
           </button>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '1.5rem' }}>
-          {instances.map((inst) => (
-            <div key={inst.id} className="glass-panel glass-panel-hover" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {instances.map(inst => {
+            const st = statusMeta(inst.status);
+            return (
+              <div key={inst.id} className="surface surface-hover p-4 flex flex-col border-purple-500/20">
+                <div className="flex items-start justify-between mb-3">
                   <div>
-                    <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--accent-green)' }}>{inst.name}</h3>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-                      <Smartphone size={14} />
-                      <span>{inst.phone || 'غير مرتبط برقم'}</span>
+                    <h3 className="font-semibold text-purple-400">{inst.name}</h3>
+                    <div className="flex items-center gap-1 text-xs text-muted mt-0.5">
+                      <Smartphone size={11} />
+                      <span dir="ltr">{inst.phone || '—'}</span>
                     </div>
                   </div>
-
-                  <span className={`badge ${inst.status === 'connected' ? 'badge-connected' : 'badge-disconnected'}`}>
-                    {inst.status === 'connected' ? 'متصل' : 'غير متصل'}
-                  </span>
+                  <span className={st.cls}>{t(st.key)}</span>
                 </div>
 
-                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '10px', fontSize: '0.85rem', marginBottom: '1.25rem', border: 'var(--glass-border)' }}>
-                  <strong>هدف البوت: </strong> {inst.persona || 'دعم وحجز لموقع OLTANI'}
+                <div className="bg-subtle border rounded-md px-2.5 py-1.5 text-xs mb-4 line-clamp-2">
+                  {inst.persona || '—'}
+                </div>
+
+                <div className="mt-auto flex gap-1.5 pt-3 border-t">
+                  {inst.status !== 'connected' ? (
+                    <button onClick={() => start(inst)} className="btn-primary flex-1 text-xs px-3 py-1.5">
+                      <QrCode size={14} /> {t('connect')}
+                    </button>
+                  ) : (
+                    <button onClick={() => stop(inst.id)} className="btn-danger flex-1 text-xs px-3 py-1.5">
+                      <Square size={14} /> {t('stop')}
+                    </button>
+                  )}
+                  <button onClick={() => { onEdit(inst); onNavigate('wizard'); }}
+                    className="btn-secondary px-2.5 py-1.5" aria-label={t('edit')}>
+                    <Pencil size={14} />
+                  </button>
+                  <button onClick={() => remove(inst.id)}
+                    className="btn-danger px-2.5 py-1.5" aria-label={t('delete')}>
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               </div>
-
-              {/* Action Buttons */}
-              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', paddingTop: '1rem', borderTop: '1px solid var(--border-color)' }}>
-                {inst.status !== 'connected' ? (
-                  <button onClick={() => handleStart(inst)} className="btn-primary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', flex: 1, background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)' }}>
-                    <QrCode size={14} />
-                    <span>ربط الـ QR</span>
-                  </button>
-                ) : (
-                  <button onClick={() => handleStop(inst.id)} className="btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', flex: 1, color: 'var(--accent-red)' }}>
-                    <Square size={14} />
-                    <span>إيقاف</span>
-                  </button>
-                )}
-
-                <button onClick={() => { onEditInstance(inst); onNavigate('wizard'); }} className="btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}>
-                  <Edit3 size={14} />
-                </button>
-
-                <button onClick={() => handleDelete(inst.id)} className="btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', color: 'var(--accent-red)' }}>
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {/* QR Code Popup */}
-      {activeQrModal && (
+      {activeQr && (
         <QRCodeModal
-          instanceId={activeQrModal}
-          onClose={() => setActiveQrModal(null)}
-          onConnected={() => {
-            loadAdminGarden();
-            setActiveQrModal(null);
-          }}
+          instanceId={activeQr}
+          onClose={() => setActiveQr(null)}
+          onConnected={() => { load(); setActiveQr(null); }}
         />
       )}
-
     </div>
   );
 }

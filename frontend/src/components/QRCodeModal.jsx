@@ -1,99 +1,102 @@
-import React, { useEffect, useState } from 'react';
-import { getSocket } from '../services/api';
-import { useLanguage } from '../context/LanguageContext';
-import { X, QrCode, CheckCircle, RefreshCw } from 'lucide-react';
+import React, { useEffect, useState, useRef } from 'react';
+import { connectSocket } from '../services/api.js';
+import { useLang } from '../contexts/LanguageContext.jsx';
+import { X, CheckCircle2, Loader2, QrCode } from 'lucide-react';
 
 export default function QRCodeModal({ instanceId, initialQr, onClose, onConnected }) {
-  const { t } = useLanguage();
-  const [qrCode, setQrCode] = useState(initialQr || null);
+  const { t } = useLang();
+  const [qr, setQr] = useState(initialQr || null);
   const [status, setStatus] = useState('connecting');
+  const [error, setError] = useState(null);
+
+  // Store callbacks in refs so the effect runs once per instanceId.
+  const onCloseRef = useRef(onClose);
+  const onConnectedRef = useRef(onConnected);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  useEffect(() => { onConnectedRef.current = onConnected; }, [onConnected]);
 
   useEffect(() => {
-    const socket = getSocket();
-    socket.emit('join_instance', instanceId);
+    let socket;
+    let mounted = true;
 
-    const handleQrUpdate = (data) => {
-      if (data.instanceId === instanceId && data.qr) {
-        setQrCode(data.qr);
-        setStatus('qr_ready');
+    (async () => {
+      try {
+        socket = await connectSocket();
+        socket.emit('instance:subscribe', instanceId);
+
+        const onPatch = (data) => {
+          if (!mounted || data?.instanceId !== instanceId) return;
+          if (data.qrCode) setQr(data.qrCode);
+          if (data.status) setStatus(data.status);
+          if (data.status === 'connected' && onConnectedRef.current) onConnectedRef.current();
+        };
+        const onInstanceError = (data) => {
+          if (data?.instanceId !== instanceId) return;
+          if (data.error === 'forbidden') setError('Not authorized to view this instance.');
+          else if (data.error === 'server_error') setError('Server error. Try again.');
+        };
+        socket.on('instance:patch', onPatch);
+        socket.on('instance:error', onInstanceError);
+      } catch (err) {
+        if (mounted) setError(err?.message?.includes('auth') ? 'Authentication required.' : 'Connection failed.');
       }
-    };
+    })();
 
-    const handleStatusChange = (data) => {
-      if (data.instanceId === instanceId) {
-        setStatus(data.status);
-        if (data.status === 'connected') {
-          if (onConnected) onConnected();
+    const onKey = (e) => { if (e.key === 'Escape') onCloseRef.current?.(); };
+    document.addEventListener('keydown', onKey);
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      mounted = false;
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = '';
+      if (socket) {
+        try {
+          socket.emit('instance:unsubscribe', instanceId);
+          socket.off('instance:patch');
+        } catch (err) {
+          console.warn('[QRCodeModal] cleanup:', err.message);
         }
       }
     };
-
-    socket.on('qr_code', handleQrUpdate);
-    socket.on('status_change', handleStatusChange);
-
-    return () => {
-      socket.off('qr_code', handleQrUpdate);
-      socket.off('status_change', handleStatusChange);
-      socket.emit('leave_instance', instanceId);
-    };
-  }, [instanceId, onConnected]);
+  }, [instanceId]);
 
   return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      background: 'rgba(0, 0, 0, 0.75)',
-      backdropFilter: 'blur(8px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 100
-    }}>
-      <div className="glass-panel" style={{ width: '90%', maxWidth: '420px', padding: '2rem', textAlign: 'center', position: 'relative' }}>
-        
-        {/* Close button */}
-        <button 
-          onClick={onClose} 
-          style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
-        >
-          <X size={20} />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
+      <div className="surface max-w-sm w-full p-6 text-center relative">
+        <button onClick={onClose} className="absolute top-3 end-3 p-1.5 text-muted hover:text-fg rounded-md hover:bg-subtle">
+          <X size={18} />
         </button>
 
-        <div style={{ display: 'inline-flex', padding: '0.75rem', background: 'rgba(0, 242, 254, 0.1)', borderRadius: '50%', color: 'var(--accent-cyan)', marginBottom: '1rem' }}>
-          <QrCode size={32} />
+        <div className="inline-flex p-2.5 rounded-xl bg-accent/10 text-accent mb-3">
+          <QrCode size={24} />
         </div>
 
-        <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '0.5rem' }}>{t('scanQR')}</h2>
-        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-          افتح تطبيق الواتساب على هاتفك &gt; الأجهزة المرتبطة &gt; ربط جهاز، وسلّط الكاميرا على الرمز التالي:
-        </p>
+        <h2 className="text-lg font-bold mb-1">{t('qrTitle')}</h2>
+        <p className="text-xs text-muted mb-5 leading-relaxed">{t('qrHelp')}</p>
 
-        {/* QR Render or Status */}
-        {status === 'connected' ? (
-          <div style={{ padding: '2rem 1rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', color: 'var(--accent-green)' }}>
-            <CheckCircle size={56} />
-            <span style={{ fontWeight: 700, fontSize: '1.1rem' }}>تم ربط رقم الواتساب بنجاح!</span>
+        {error ? (
+          <div className="py-6 flex flex-col items-center gap-3 text-err">
+            <span className="text-sm">{error}</span>
+            <button onClick={() => onCloseRef.current?.()} className="btn-secondary">{t('cancel')}</button>
           </div>
-        ) : qrCode ? (
-          <div style={{ background: '#ffffff', padding: '1rem', borderRadius: '16px', display: 'inline-block', boxShadow: '0 8px 24px rgba(0,0,0,0.2)' }}>
-            <img src={qrCode} alt="WhatsApp QR Code" style={{ width: '220px', height: '220px' }} />
+        ) : status === 'connected' ? (
+          <div className="py-6 flex flex-col items-center gap-3 text-ok">
+            <CheckCircle2 size={56} />
+            <span className="font-semibold">{t('qrConnected')}</span>
+          </div>
+        ) : qr ? (
+          <div className="inline-block p-3 bg-white rounded-xl shadow-card">
+            <img src={qr} alt="QR" className="w-52 h-52" />
           </div>
         ) : (
-          <div style={{ padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', color: 'var(--text-muted)' }}>
-            <RefreshCw size={36} className="spin" style={{ animation: 'spin 1.5s linear infinite' }} />
-            <span>جاري التجهيز وتوليد رمز الـ QR...</span>
+          <div className="py-10 flex flex-col items-center gap-3 text-muted">
+            <Loader2 size={36} className="animate-spin" />
+            <span className="text-sm">{t('qrGenerating')}</span>
           </div>
         )}
 
-        <div style={{ marginTop: '1.5rem' }}>
-          <button onClick={onClose} className="btn-secondary" style={{ width: '100%', justifyContent: 'center' }}>
-            إغلاق النافذة
-          </button>
-        </div>
-
+        <button onClick={onClose} className="btn-secondary w-full mt-5">{t('cancel')}</button>
       </div>
     </div>
   );

@@ -7,244 +7,209 @@ import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
 import pino from 'pino';
+import { getDb } from '../config/firebase.js';
+import { logger } from '../utils/logger.js';
 import { BotEngine } from './botEngine.js';
-import { QuotaManager } from './quotaManager.js';
-import { db } from '../config/firebase.js';
+import { QuotaManager, resolveEffectivePlan } from './quotaManager.js';
 
 const SESSIONS_DIR = path.resolve('./sessions');
-if (!fs.existsSync(SESSIONS_DIR)) {
-  fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-}
+if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
-class BaileysSessionManager {
+const MAX_RECONNECT_BACKOFF_MS = 60_000;
+
+class BaileysManager {
   constructor() {
-    this.sessions = new Map(); // instanceId -> { socket, status, qrCode, ioSocket }
+    this.sessions = new Map(); // instanceId -> session object
     this.io = null;
   }
 
-  setSocketIO(io) {
-    this.io = io;
+  setSocketIO(io) { this.io = io; }
+
+  /** Persist instance updates to Firestore and broadcast via socket.io */
+  async _patch(instanceId, patch) {
+    if (this.io) this.io.to(`inst:${instanceId}`).emit('instance:patch', { instanceId, ...patch });
+    const db = getDb();
+    if (!db) return;
+    try {
+      await db.collection('instances').doc(instanceId).set(patch, { merge: true });
+    } catch (e) {
+      logger.warn({ msg: e.message }, 'Firestore patch failed.');
+    }
   }
 
-  async startInstance(instanceId, instanceConfig = {}) {
-    if (this.sessions.has(instanceId)) {
-      const existing = this.sessions.get(instanceId);
-      if (existing.status === 'connected') {
-        console.log(`Instance ${instanceId} is already connected.`);
-        return { status: 'connected' };
-      }
+  async _loadConfig(instanceId) {
+    const cached = this.sessions.get(instanceId);
+    if (cached?.config?.userId && cached?.config?._hydrated) return cached.config;
+
+    const db = getDb();
+    if (!db) return cached?.config || {};
+    const snap = await db.collection('instances').doc(instanceId).get();
+    if (!snap.exists) return cached?.config || {};
+    const data = snap.data();
+    if (data.userId) {
+      const usnap = await db.collection('users').doc(data.userId).get();
+      if (usnap.exists) data.user = usnap.data();
     }
+    // Cache hydrated config so subsequent messages don't re-fetch.
+    if (cached) {
+      cached.config = { ...data, _hydrated: true };
+    }
+    return data;
+  }
+
+  async startInstance(instanceId, config = {}) {
+    const existing = this.sessions.get(instanceId);
+    if (existing?.status === 'connected') return existing;
 
     const sessionPath = path.join(SESSIONS_DIR, instanceId);
-    if (!fs.existsSync(sessionPath)) {
-      fs.mkdirSync(sessionPath, { recursive: true });
-    }
+    if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
 
-    const logger = pino({ level: 'silent' });
-
     const socket = makeWASocket({
       version,
-      logger,
+      logger: pino({ level: 'silent' }),
       auth: state,
-      printQRInTerminal: false
+      printQRInTerminal: false,
+      browser: ['OLTANI', 'Chrome', '1.0.0'],
+      defaultQueryTimeoutMs: 60_000
     });
 
-    const sessionObj = {
+    const session = {
       socket,
       status: 'connecting',
-      qrCode: null,
-      config: instanceConfig
+      qr: null,
+      phone: '',
+      config,
+      reconnectAttempts: 0,
+      closed: false
     };
+    this.sessions.set(instanceId, session);
 
-    this.sessions.set(instanceId, sessionObj);
-
-    // 1. Connection Update Listener
     socket.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
         try {
-          const qrDataUrl = await QRCode.toDataURL(qr);
-          sessionObj.qrCode = qrDataUrl;
-          sessionObj.status = 'qr_ready';
-
-          // Broadcast QR code update via Socket.io
-          if (this.io) {
-            this.io.to(instanceId).emit('qr_code', { instanceId, qr: qrDataUrl });
-            this.io.to(instanceId).emit('status_change', { instanceId, status: 'qr_ready' });
-          }
-
-          this.updateInstanceDoc(instanceId, { status: 'qr_ready', qrCode: qrDataUrl });
-        } catch (err) {
-          console.error(`Error generating QR for ${instanceId}:`, err.message);
+          const dataUrl = await QRCode.toDataURL(qr);
+          session.qr = dataUrl;
+          session.status = 'qr_ready';
+          await this._patch(instanceId, { status: 'qr_ready', qrCode: dataUrl, updatedAt: new Date().toISOString() });
+        } catch (e) {
+          logger.error({ msg: e.message }, 'QR generation failed.');
         }
       }
 
       if (connection === 'open') {
-        console.log(`✅ WhatsApp Connected for Instance: ${instanceId}`);
-        sessionObj.status = 'connected';
-        sessionObj.qrCode = null;
-        const phone = socket.user?.id ? socket.user.id.split(':')[0] : '';
-
-        if (this.io) {
-          this.io.to(instanceId).emit('status_change', { instanceId, status: 'connected', phone });
-        }
-
-        this.updateInstanceDoc(instanceId, { status: 'connected', phone, qrCode: null });
+        session.status = 'connected';
+        session.qr = null;
+        session.reconnectAttempts = 0;
+        session.phone = socket.user?.id?.split(':')[0] || '';
+        await this._patch(instanceId, {
+          status: 'connected',
+          qrCode: null,
+          phone: session.phone,
+          updatedAt: new Date().toISOString()
+        });
+        logger.info({ instanceId, phone: session.phone }, 'WhatsApp connected.');
       }
 
       if (connection === 'close') {
-        const reason = lastDisconnect?.error?.output?.statusCode;
-        console.log(`Disconnected ${instanceId}. Reason code: ${reason}`);
-
-        sessionObj.status = 'disconnected';
-
-        if (reason === DisconnectReason.loggedOut) {
-          console.log(`Instance ${instanceId} logged out by user. Cleaning session files...`);
-          this.deleteSessionFiles(instanceId);
-          this.sessions.delete(instanceId);
-          this.updateInstanceDoc(instanceId, { status: 'disconnected', phone: '' });
-
-          if (this.io) {
-            this.io.to(instanceId).emit('status_change', { instanceId, status: 'logged_out' });
-          }
-        } else {
-          // Attempt automatic reconnect
-          console.log(`Attempting reconnect for instance ${instanceId}...`);
-          setTimeout(() => this.startInstance(instanceId, instanceConfig), 3000);
+        const code = lastDisconnect?.error?.output?.statusCode;
+        session.status = 'disconnected';
+        if (code === DisconnectReason.loggedOut) {
+          await this._destroy(instanceId);
+          await this._patch(instanceId, { status: 'logged_out', phone: '', qrCode: null });
+        } else if (!session.closed) {
+          // Exponential backoff
+          const attempts = session.reconnectAttempts + 1;
+          session.reconnectAttempts = attempts;
+          const delay = Math.min(1000 * 2 ** attempts, MAX_RECONNECT_BACKOFF_MS);
+          logger.warn({ instanceId, code, attempts, delay }, 'Reconnecting after close.');
+          setTimeout(() => {
+            if (!session.closed) this.startInstance(instanceId, session.config);
+          }, delay);
         }
       }
     });
 
-    // 2. Credentials Save Listener
     socket.ev.on('creds.update', saveCreds);
 
-    // 3. Incoming Messages Listener
-    socket.ev.on('messages.upsert', async (m) => {
-      try {
-        if (m.type !== 'notify') return;
+    socket.ev.on('messages.upsert', async (evt) => {
+      if (evt.type !== 'notify') return;
+      for (const msg of evt.messages) {
+        try {
+          if (msg.key?.fromMe) continue;
+          const jid = msg.key?.remoteJid || '';
+          // Skip group, broadcast, newsletter, status, and announcement jids.
+          if (
+            jid.endsWith('@g.us') ||
+            jid.endsWith('@newsletter') ||
+            jid === 'status@broadcast' ||
+            jid.endsWith('@broadcast')
+          ) continue;
 
-        for (const msg of m.messages) {
-          // Ignore status broadcasts, self messages, or group chats if needed
-          if (msg.key.fromMe) continue;
-
-          const remoteJid = msg.key.remoteJid;
-          if (remoteJid.endsWith('@g.us')) continue; // Skip group messages for SaaS bots
-
-          const textMessage =
+          const text =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
-            msg.message?.imageMessage?.caption;
+            msg.message?.imageMessage?.caption ||
+            msg.message?.videoMessage?.caption ||
+            '';
+          if (!text) continue;
 
-          if (!textMessage) continue;
+          const instanceCfg = await this._loadConfig(instanceId);
+          const user = instanceCfg.user || {};
+          const effectivePlan = resolveEffectivePlan(user);
+          const uid = instanceCfg.userId;
 
-          console.log(`📩 Incoming message on [${instanceId}] from ${remoteJid}: "${textMessage}"`);
-
-          // Fetch latest instance configuration from DB or memory
-          const config = await this.getInstanceConfig(instanceId);
-          const userId = config.userId;
-          const userPlan = config.userPlan || 'free';
-
-          // Check message quotas
-          const canSend = await QuotaManager.canSendMessage(userId, userPlan);
-          if (!canSend) {
-            console.warn(`⚠️ Daily quota exceeded for user ${userId} on plan ${userPlan}`);
-            await socket.sendMessage(remoteJid, {
-              text: '⚠️ تم الوصول للحد الأقصى للرسائل اليومية المتاحة لخطة اشتراكك. يمكنك ترقية حسابك للحصول على رسائل أكثر.'
-            });
-            continue;
+          if (uid) {
+            const ok = await QuotaManager.canSendMessage(uid, effectivePlan);
+            if (!ok.allowed) {
+              await socket.sendMessage(jid, {
+                text: '⚠️ تم الوصول للحد الأقصى اليومي لرسائل البوت. يمكنك ترقية الباقة لمتابعة المحادثة.'
+              });
+              continue;
+            }
           }
 
-          // Process bot response
-          const botReply = await BotEngine.processMessage(config, textMessage);
+          const reply = await BotEngine.process(instanceCfg, text);
+          if (!reply) continue;
+          await socket.sendMessage(jid, { text: reply });
+          if (uid) await QuotaManager.incrementMessages(uid);
 
-          if (botReply) {
-            await socket.sendMessage(remoteJid, { text: botReply });
-            await QuotaManager.incrementMessageCount(userId);
-            console.log(`📤 Bot Replied on [${instanceId}]: "${botReply.substring(0, 50)}..."`);
-          }
+          logger.info({ instanceId, from: jid, q: text.slice(0, 40) }, 'Replied.');
+        } catch (e) {
+          logger.error({ msg: e.message }, 'Message handling error.');
         }
-      } catch (err) {
-        console.error(`Error processing message on instance ${instanceId}:`, err.message);
       }
     });
 
-    return sessionObj;
+    return session;
+  }
+
+  async _destroy(instanceId) {
+    const session = this.sessions.get(instanceId);
+    if (session) {
+      session.closed = true;
+      try { await session.socket.logout(); } catch (_) {}
+    }
+    const p = path.join(SESSIONS_DIR, instanceId);
+    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+    this.sessions.delete(instanceId);
   }
 
   async stopInstance(instanceId) {
-    if (this.sessions.has(instanceId)) {
-      const session = this.sessions.get(instanceId);
-      try {
-        await session.socket.logout();
-      } catch (e) {
-        try {
-          session.socket.end(new Error('Manual stop'));
-        } catch (_) {}
-      }
-      this.deleteSessionFiles(instanceId);
-      this.sessions.delete(instanceId);
-      this.updateInstanceDoc(instanceId, { status: 'disconnected', phone: '' });
-      return true;
-    }
-    return false;
-  }
-
-  deleteSessionFiles(instanceId) {
-    const sessionPath = path.join(SESSIONS_DIR, instanceId);
-    if (fs.existsSync(sessionPath)) {
-      fs.rmSync(sessionPath, { recursive: true, force: true });
-    }
+    await this._destroy(instanceId);
+    await this._patch(instanceId, { status: 'disconnected', phone: '', qrCode: null });
   }
 
   getStatus(instanceId) {
-    if (this.sessions.has(instanceId)) {
-      const session = this.sessions.get(instanceId);
-      return {
-        status: session.status,
-        qrCode: session.qrCode
-      };
-    }
-    return { status: 'disconnected', qrCode: null };
-  }
-
-  async getInstanceConfig(instanceId) {
-    if (this.sessions.has(instanceId) && this.sessions.get(instanceId).config?.userId) {
-      return this.sessions.get(instanceId).config;
-    }
-    if (db) {
-      try {
-        const doc = await db.collection('instances').doc(instanceId).get();
-        if (doc.exists) {
-          const instData = doc.data();
-          // Fetch user plan
-          if (instData.userId) {
-            const userDoc = await db.collection('users').doc(instData.userId).get();
-            if (userDoc.exists) {
-              instData.userPlan = userDoc.data().plan || 'free';
-            }
-          }
-          return instData;
-        }
-      } catch (e) {
-        console.error('Error reading instance config from Firestore:', e.message);
-      }
-    }
-    return {};
-  }
-
-  async updateInstanceDoc(instanceId, updates) {
-    if (db) {
-      try {
-        await db.collection('instances').doc(instanceId).set(updates, { merge: true });
-      } catch (e) {
-        console.error('Error updating instance document:', e.message);
-      }
-    }
+    const s = this.sessions.get(instanceId);
+    if (!s) return { status: 'disconnected', qrCode: null };
+    return { status: s.status, qrCode: s.qr };
   }
 }
 
-export const baileysManager = new BaileysSessionManager();
+export const baileys = new BaileysManager();
+export default baileys;

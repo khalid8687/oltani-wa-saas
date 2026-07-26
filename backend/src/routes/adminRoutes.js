@@ -1,128 +1,130 @@
-import express from 'express';
-import { geminiBalancer } from '../config/gemini.js';
-import { db } from '../config/firebase.js';
+import { Router } from 'express';
+import { getDb, getAuth } from '../config/firebase.js';
+import { gemini } from '../config/gemini.js';
+import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { PLAN_LIMITS, TRIAL_DAYS } from '../config/env.js';
 
-const router = express.Router();
+const router = Router();
+router.use(requireAuth, requireAdmin);
 
-const SUPER_ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'khattab8687@gmail.com';
-
-// Middleware to verify admin access
-const verifyAdmin = async (req, res, next) => {
-  const adminEmail = req.headers['x-admin-email'];
-  if (adminEmail === SUPER_ADMIN_EMAIL) {
-    return next();
-  }
-
-  if (db && adminEmail) {
-    const snapshot = await db.collection('users').where('email', '==', adminEmail).get();
-    if (!snapshot.empty) {
-      const user = snapshot.docs[0].data();
-      if (user.role === 'admin') {
-        return next();
-      }
-    }
-  }
-
-  return res.status(403).json({ success: false, error: 'Unauthorized: Admin privileges required.' });
-};
-
-router.use(verifyAdmin);
-
-// 1. User Management: Get all users
+/** GET /admin/users */
 router.get('/users', async (req, res) => {
   try {
+    const db = getDb();
     if (!db) return res.json({ success: true, users: [] });
-
-    const snapshot = await db.collection('users').get();
-    const users = [];
-    snapshot.forEach(doc => {
-      users.push({ uid: doc.id, ...doc.data() });
-    });
-
-    res.json({ success: true, users });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    const snap = await db.collection('users').orderBy('createdAt', 'desc').get();
+    const users = snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+    return res.json({ success: true, users });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 2. User Management: Update Plan / Role / Status
+/** POST /admin/users/update  — set plan/role/blocked + sync claims */
 router.post('/users/update', async (req, res) => {
   try {
-    const { uid, plan, role, isBlocked } = req.body;
-    if (!uid) return res.status(400).json({ success: false, error: 'User UID required' });
+    const db = getDb();
+    const auth = getAuth();
+    const { uid, plan, role, isBlocked } = req.body || {};
+    if (!uid) return res.status(400).json({ success: false, error: 'uid required.' });
 
-    if (db) {
-      await db.collection('users').doc(uid).set(
-        {
-          plan: plan || 'free',
-          role: role || 'user',
-          isBlocked: !!isBlocked,
-          updatedAt: new Date().toISOString()
-        },
-        { merge: true }
-      );
-    }
+    const patch = { updatedAt: new Date().toISOString() };
+    if (plan && PLAN_LIMITS[plan]) patch.plan = plan;
+    if (role === 'admin' || role === 'user') patch.role = role;
+    if (typeof isBlocked === 'boolean') patch.isBlocked = isBlocked;
 
-    res.json({ success: true, message: 'User settings updated.' });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    await db.collection('users').doc(uid).set(patch, { merge: true });
+
+    const final = await db.collection('users').doc(uid).get();
+    const data = final.data();
+    try {
+      await auth.setCustomUserClaims(uid, { role: data.role || 'user', plan: data.plan || 'free' });
+    } catch (_) {}
+
+    return res.json({ success: true, user: { uid, ...data } });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 3. Gemini Load Balancer & Key Usage Stats
-router.get('/gemini/stats', (req, res) => {
+/** DELETE /admin/users/:uid — block + disable Firebase Auth (revokes active tokens). */
+router.delete('/users/:uid', async (req, res) => {
   try {
-    const stats = geminiBalancer.getStats();
-    res.json({ success: true, stats });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    const db = getDb();
+    const auth = getAuth();
+    const { uid } = req.params;
+    await db.collection('users').doc(uid).set(
+      { isBlocked: true, updatedAt: new Date().toISOString() },
+      { merge: true }
+    );
+    try {
+      await auth.updateUser(uid, { disabled: true });
+      await auth.revokeRefreshTokens(uid);
+    } catch (e) { /* user may not exist in Auth yet */ }
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 4. Update Gemini API Keys & Model Config
+/** GET /admin/gemini/stats */
+router.get('/gemini/stats', (req, res) => {
+  res.json({ success: true, stats: gemini.getStats() });
+});
+
+/** POST /admin/gemini/config — live-update keys + model, persist to Firestore */
 router.post('/gemini/config', async (req, res) => {
   try {
-    const { keys, modelName } = req.body;
-
-    if (keys && Array.isArray(keys)) {
-      geminiBalancer.updateKeys(keys);
-    }
-    if (modelName) {
-      geminiBalancer.setModel(modelName);
-    }
-
-    if (db) {
-      await db.collection('settings').doc('gemini').set(
-        {
-          keys: keys || [],
-          modelName: modelName || 'gemini-1.5-flash',
-          updatedAt: new Date().toISOString()
-        },
-        { merge: true }
-      );
-    }
-
-    res.json({ success: true, message: 'Gemini Load Balancer updated successfully.' });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    const { keys, modelName } = req.body || {};
+    if (Array.isArray(keys)) gemini.setKeys(keys);
+    if (modelName) gemini.setModel(modelName);
+    await gemini.persist();
+    return res.json({ success: true, stats: gemini.getStats() });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 5. Admin Garden: List Dedicated Internal Instances
-router.get('/admin-garden', async (req, res) => {
+/** GET /admin/garden — list admin-garden instances */
+router.get('/garden', async (req, res) => {
   try {
+    const db = getDb();
     if (!db) return res.json({ success: true, instances: [] });
-
-    const snapshot = await db.collection('instances').where('isAdminGarden', '==', true).get();
-    const instances = [];
-    snapshot.forEach(doc => {
-      instances.push({ id: doc.id, ...doc.data() });
-    });
-
-    res.json({ success: true, instances });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    const snap = await db.collection('instances').where('isAdminGarden', '==', true).get();
+    const instances = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    return res.json({ success: true, instances });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
+/** GET /admin/stats — overview metrics */
+router.get('/stats', async (req, res) => {
+  try {
+    const db = getDb();
+    if (!db) return res.json({ success: true, stats: {} });
+    const [usersSnap, instSnap] = await Promise.all([
+      db.collection('users').get(),
+      db.collection('instances').where('isAdminGarden', '==', false).get()
+    ]);
+    const planCounts = { free: 0, pro: 0, ultra: 0 };
+    usersSnap.forEach(d => {
+      const p = d.data().plan || 'free';
+      planCounts[p] = (planCounts[p] || 0) + 1;
+    });
+    return res.json({
+      success: true,
+      stats: {
+        totalUsers: usersSnap.size,
+        totalInstances: instSnap.size,
+        planCounts,
+        gemini: gemini.getStats()
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+export { TRIAL_DAYS };
 export default router;

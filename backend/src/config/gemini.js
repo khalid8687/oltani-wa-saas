@@ -1,116 +1,163 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import dotenv from 'dotenv';
+import { getDb } from './firebase.js';
+import { env } from './env.js';
+import { logger } from '../utils/logger.js';
 
-dotenv.config();
-
+/**
+ * GeminiLoadBalancer
+ * - Round-robins across N API keys.
+ * - On failure, marks the key "cooling" and tries the next.
+ * - Hot-reloadable: admin can push new keys/model via setKeys/setModel.
+ * - Persists config to Firestore `settings/gemini` and hydrates at boot.
+ */
 class GeminiLoadBalancer {
   constructor() {
     this.keys = [];
-    this.currentIndex = 0;
-    this.currentModel = process.env.DEFAULT_GEMINI_MODEL || 'gemini-1.5-flash';
-    this.usageStats = {};
-
-    this.initKeys();
+    this.cursor = 0;
+    this.model = env.geminiModel;
+    this.stats = new Map(); // index -> { key, masked, count, errors, coolingUntil }
+    this.activeModel = this.model;
   }
 
-  initKeys(newKeys = null) {
-    if (newKeys && Array.isArray(newKeys) && newKeys.length > 0) {
-      this.keys = newKeys.filter(k => k && k.trim().length > 0);
-    } else if (process.env.GEMINI_API_KEYS) {
-      this.keys = process.env.GEMINI_API_KEYS.split(',')
-        .map(k => k.trim())
-        .filter(k => k.length > 0);
-    }
+  mask(key) {
+    if (!key || key.length < 10) return '****';
+    return `${key.slice(0, 6)}…${key.slice(-4)}`;
+  }
 
-    if (this.keys.length === 0) {
-      console.warn('⚠️ Warning: No Gemini API keys provided in environment or database.');
-    } else {
-      console.log(`✅ Loaded ${this.keys.length} Gemini API key(s) into load balancer.`);
-    }
-
-    // Initialize stats
-    this.keys.forEach((key, idx) => {
-      if (!this.usageStats[idx]) {
-        this.usageStats[idx] = { keyMasked: this.maskKey(key), count: 0, errors: 0, lastUsed: null };
-      }
+  setKeys(keys) {
+    const clean = (keys || []).map((k) => String(k).trim()).filter(Boolean);
+    const newStats = new Map();
+    clean.forEach((key, idx) => {
+      const prev = this.stats.get(this.keys.indexOf(key));
+      newStats.set(idx, {
+        key,
+        masked: this.mask(key),
+        count: prev?.count || 0,
+        errors: prev?.errors || 0,
+        coolingUntil: 0
+      });
     });
+    this.keys = clean;
+    this.stats = newStats;
+    if (this.cursor >= clean.length) this.cursor = 0;
+    logger.info(`🔑 Gemini pool updated: ${clean.length} key(s) loaded.`);
   }
 
-  maskKey(key) {
-    if (!key || key.length < 8) return '****';
-    return key.substring(0, 4) + '...' + key.substring(key.length - 4);
-  }
-
-  updateKeys(keys) {
-    this.initKeys(keys);
-  }
-
-  setModel(modelName) {
-    if (modelName) {
-      this.currentModel = modelName;
-      console.log(`🔄 Gemini Model updated to: ${modelName}`);
+  setModel(model) {
+    if (model && model !== this.model) {
+      this.model = model;
+      this.activeModel = model;
+      logger.info(`🧠 Gemini model set to ${model}`);
     }
   }
 
-  getNextKey() {
+  nextIndex() {
+    if (this.keys.length === 0) return -1;
+    const now = Date.now();
+    for (let i = 0; i < this.keys.length; i++) {
+      const idx = (this.cursor + i) % this.keys.length;
+      const s = this.stats.get(idx);
+      if (s && s.coolingUntil <= now) {
+        this.cursor = (idx + 1) % this.keys.length;
+        return idx;
+      }
+    }
+    return -1;
+  }
+
+  async generate(systemInstruction, userPrompt, { temperature = 0.7, maxTokens = 1024 } = {}) {
     if (this.keys.length === 0) {
-      throw new Error('No Gemini API keys available in pool.');
-    }
-    const index = this.currentIndex;
-    const key = this.keys[index];
-    this.currentIndex = (this.currentIndex + 1) % this.keys.length;
-    return { key, index };
-  }
-
-  async generateResponse(systemInstruction, userPrompt) {
-    if (this.keys.length === 0) {
-      return '⚠️ (System Error: No Gemini API Key configured in Admin settings)';
+      throw new Error('No Gemini API keys configured.');
     }
 
-    let attempts = 0;
-    const maxAttempts = this.keys.length;
+    const tried = new Set();
+    let lastError = null;
 
-    while (attempts < maxAttempts) {
-      const { key, index } = this.getNextKey();
-      attempts++;
+    for (let attempt = 0; attempt < this.keys.length; attempt++) {
+      const idx = this.nextIndex();
+      if (idx === -1 || tried.has(idx)) break;
+      tried.add(idx);
+
+      const entry = this.stats.get(idx);
+      const genAI = new GoogleGenerativeAI(entry.key);
 
       try {
-        const genAI = new GoogleGenerativeAI(key);
         const model = genAI.getGenerativeModel({
-          model: this.currentModel,
-          systemInstruction: systemInstruction || undefined
+          model: this.activeModel,
+          systemInstruction: systemInstruction || undefined,
+          generationConfig: { temperature, maxOutputTokens: maxTokens }
         });
-
         const result = await model.generateContent(userPrompt);
-        const responseText = result.response.text();
+        const text = result.response.text();
 
-        // Update Stats
-        this.usageStats[index].count++;
-        this.usageStats[index].lastUsed = new Date().toISOString();
-
-        return responseText;
-      } catch (error) {
-        console.error(`❌ Gemini API Key Index [${index}] failed:`, error.message);
-        if (this.usageStats[index]) {
-          this.usageStats[index].errors++;
-        }
-
-        // If quota or auth error, continue loop to try next key
-        if (attempts >= maxAttempts) {
-          throw new Error(`All ${maxAttempts} Gemini API keys failed. Last error: ${error.message}`);
-        }
+        entry.count += 1;
+        entry.coolingUntil = 0;
+        return text;
+      } catch (err) {
+        entry.errors += 1;
+        lastError = err;
+        const msg = String(err.message || '');
+        const isQuota = /quota|rate|429|RESOURCE_EXHAUSTED/i.test(msg);
+        const isAuth = /API_KEY_INVALID|invalid api key|403/i.test(msg);
+        const cooldownMs = isQuota ? 60_000 : isAuth ? 300_000 : 5_000;
+        entry.coolingUntil = Date.now() + cooldownMs;
+        logger.warn({ idx, masked: entry.masked, msg }, 'Gemini key failed, marking cooling.');
       }
     }
+
+    throw new Error(`All Gemini keys failed. Last error: ${lastError?.message || 'unknown'}`);
   }
 
   getStats() {
     return {
       totalKeys: this.keys.length,
-      currentModel: this.currentModel,
-      currentIndex: this.currentIndex,
-      stats: Object.values(this.usageStats)
+      activeModel: this.activeModel,
+      cursor: this.cursor,
+      keys: Array.from(this.stats.entries()).map(([idx, s]) => ({
+        index: idx,
+        masked: s.masked,
+        count: s.count,
+        errors: s.errors,
+        cooling: s.coolingUntil > Date.now()
+      }))
     };
+  }
+
+  async persist() {
+    const db = getDb();
+    if (!db) return;
+    try {
+      await db.collection('settings').doc('gemini').set({
+        keys: this.keys,
+        modelName: this.activeModel,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (e) {
+      logger.error({ msg: e.message }, 'Failed to persist Gemini settings.');
+    }
+  }
+
+  async hydrate() {
+    const db = getDb();
+    if (!db) return;
+    try {
+      const snap = await db.collection('settings').doc('gemini').get();
+      if (snap.exists) {
+        const data = snap.data();
+        if (Array.isArray(data.keys) && data.keys.length) {
+          this.setKeys(data.keys);
+          logger.info(`🔄 Hydrated ${data.keys.length} Gemini keys from Firestore.`);
+        }
+        if (data.modelName) this.setModel(data.modelName);
+      }
+    } catch (e) {
+      logger.warn({ msg: e.message }, 'Gemini hydrate skipped.');
+    }
   }
 }
 
-export const geminiBalancer = new GeminiLoadBalancer();
+export const gemini = new GeminiLoadBalancer();
+
+// Seed from env at boot (admin can override later; persist() will save updates).
+gemini.setKeys(env.geminiKeys);
+gemini.hydrate();
